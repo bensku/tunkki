@@ -1,0 +1,19 @@
+{
+    "name": "@bensku/tunkki",
+    "module": "index.ts",
+    "exports": {
+        ".": "./index.ts",
+        "./task": "./task/index.ts"
+    },
+    "scripts": {
+        "check": "biome check --fix"
+    },
+    "type": "module",
+    "devDependencies": {
+        "@biomejs/biome": "2.4.13",
+        "@types/bun": "latest"
+    },
+    "peerDependencies": {
+        "typescript": "^5"
+    }
+}

@@ -1,0 +1,19 @@
+minimumLimaVersion: 2.0.0
+
+base: template:_default/mounts
+
+images:
+- location: https://download.opensuse.org/tumbleweed/appliances/openSUSE-MicroOS.x86_64-ContainerHost-OpenStack-Cloud.qcow2
+  arch: x86_64
+
+- location: https://download.opensuse.org/ports/aarch64/tumbleweed/appliances/openSUSE-MicroOS.aarch64-ContainerHost-OpenStack-Cloud.qcow2
+  arch: aarch64
+
+# MicroOS boots with a read-only btrfs root, so Lima's init script can't
+# mkdir /mnt/lima-cidata. Overlay tmpfs at /mnt before cloud-init's per-boot
+# scripts run. mode:boot runs as bootcmd, ahead of 00-lima.boot.sh.
+provision:
+- mode: boot
+  script: |
+    #!/bin/sh
+    mountpoint -q /mnt || mount -t tmpfs tmpfs /mnt
