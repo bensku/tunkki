@@ -1,6 +1,9 @@
-import { deploy, hosts, podman, protocols } from '@bensku/tunkki';
+import { deploy, podman, protocols } from '@bensku/tunkki';
 
-hosts([
+podman.pod('test-nginx', {});
+podman.pod('foo', {});
+
+deploy('test', [
     {
         id: 'test1',
         conn: protocols.proxyCmd(
@@ -56,7 +59,3 @@ hosts([
         ),
     },
 ]);
-
-podman.pod('test-nginx', {});
-
-deploy({});

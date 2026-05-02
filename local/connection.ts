@@ -1,6 +1,7 @@
 import type { Host, protocols } from '@bensku/tunkki';
 import type { FileSink } from 'bun';
 import { type Event, readEvents, writeEvent } from '../common/event';
+import { log } from '../common/log';
 
 export class Connection {
     #in: FileSink;
@@ -46,6 +47,7 @@ export class Connection {
     }
 
     async send(event: Event) {
+        log.debug('local->remote', 'event', event);
         await this.#in.write(writeEvent(event));
     }
 

@@ -1,40 +1,51 @@
+import { log, setupLogger } from './common/log';
 import type { TagSet } from './common/task';
 import * as builder from './local/builder';
 import { getCliOptions } from './local/cli';
 import { Connection } from './local/connection';
-import { execute, plan } from './local/runner';
+import * as runner from './local/runner';
 import { filterTasks, type Task } from './local/task';
 import type { Connector } from './protocol';
 
 export * as protocols from './protocol';
 export * as podman from './task/podman';
 
-export async function group(
+/**
+ * Groups tasks together. Tasks inside a group get then group's id as prefix
+ * to their own ids. The group handler may also select which outputs to expose
+ * for other code.
+ * @param id Globally unique group id.
+ * @param handler Callback that creates tasks inside the group.
+ * @returns Outputs of handler, if any.
+ */
+export async function group<T>(
     id: string,
-    handler: () => Promise<void> | void,
-): Promise<void> {
+    handler: () => Promise<T> | T,
+): Promise<T> {
     builder.pushId(id);
-    await handler();
+    const outputs = await handler();
     builder.popId();
+    return outputs;
 }
 
-export async function on(
+/**
+ * Constrains tasks to be only applied on select hosts.
+ * @param targets Tags or host id that the tasks should be applied to.
+ * If multiple tags are given, OR semantics are used. Globbing is supported
+ * for tag values.
+ * @param handler Callback that creates the tasks.
+ * @returns Outputs of handler, if any.
+ */
+export async function on<T>(
     targets: TagSet | string,
-    handler: () => Promise<void> | void,
-): Promise<void> {
+    handler: () => Promise<T> | T,
+): Promise<T> {
     builder.pushTargets(
         typeof targets === 'string' ? { host: targets } : targets,
     );
-    await handler();
+    const outputs = await handler();
     builder.popTargets();
-}
-
-export async function sequential(
-    handler: () => Promise<void> | void,
-): Promise<void> {
-    builder.beginSequential();
-    await handler();
-    builder.endSequential();
+    return outputs;
 }
 
 export interface Host {
@@ -43,47 +54,186 @@ export interface Host {
     tags?: TagSet;
 }
 
-export function hosts(hosts: Host[]): void {
-    builder.hosts.push(...hosts);
-}
-
-export interface DeployOptions {
-    /**
-     * Enable interactive mode, in which Tunkki parses CLI arguments, presents
-     * plan to the user and (if approved) deploys it.
-     */
-    interactive?: boolean;
-
-    mode?: 'printTasks' | 'installAgent' | 'plan' | 'apply';
-
-    debug?: boolean;
-}
-
-export async function deploy(options: DeployOptions) {
-    if (options.interactive !== false) {
-        options.interactive = true;
-    }
-    if (options.interactive) {
-        // In interactive mode, allow CLI options to override options
-        options = { ...options, ...getCliOptions(Bun.argv) };
-    }
-
-    const mode = options.mode ?? 'plan';
-
-    const allTasks = builder.tasks;
-    const hosts = builder.hosts;
-
-    // Filter tasks to the hosts
+export async function connect(hosts: Host[]): Promise<TargetPool> {
+    // Load tasks for each host
     const tasks: Map<string, Task[]> = new Map();
     for (const host of hosts) {
         tasks.set(
             host.id,
-            filterTasks(allTasks, { ...host.tags, host: host.id }),
+            filterTasks(builder.tasks, { ...host.tags, host: host.id }),
         );
     }
 
+    // Attempt to connect to hosts
+    const attempts = await Promise.allSettled(
+        hosts.map((host) => host.conn.connect()),
+    );
+    const failures = attempts
+        .filter((conn) => conn.status === 'rejected')
+        .map((conn) => conn.reason);
+    const successes = attempts
+        .filter((conn) => conn.status === 'fulfilled')
+        .map((conn) => conn.value);
+    if (failures.length > 0) {
+        // On failure, close the successful connections before erroring!
+        for (const conn of successes) {
+            conn.close();
+        }
+        throw new AggregateError(failures, 'connecting to hosts failed');
+    }
+    // biome-ignore lint/style/noNonNullAssertion: there are no failures, indices in successes are same as indices in hosts
+    const conns = successes.map((conn, i) => new Connection(conn, hosts[i]!));
+    return new TargetPool(conns, tasks);
+}
+
+export type Plan = runner.Plan;
+
+export type Event = runner.Event;
+
+export interface Result {
+    /**
+     * Id of host that was deployed to.
+     */
+    host: string;
+    completed: string[];
+    skipped: string[];
+    errored: {
+        taskId: string;
+        error: string;
+    }[];
+}
+
+async function* mergeAsync<T>(gens: AsyncGenerator<T>[]): AsyncGenerator<T> {
+    const next = (g: AsyncGenerator<T>, i: number) =>
+        g.next().then((r) => ({ g, i, r }));
+    const pending = new Map(gens.map((g, i) => [i, next(g, i)]));
+    while (pending.size) {
+        const { g, i, r } = await Promise.race(pending.values());
+        if (r.done) {
+            pending.delete(i);
+        } else {
+            yield r.value;
+            pending.set(i, next(g, i));
+        }
+    }
+}
+
+export class TargetPool {
+    #conns: Connection[];
+    #stage = 0;
+    #hostTasks: Map<string, Task[]>;
+
+    constructor(conns: Connection[], hostTasks: Map<string, Task[]>) {
+        this.#conns = conns;
+        this.#hostTasks = hostTasks;
+    }
+
+    async plan(stack: string): Promise<Plan[]> {
+        if (this.#stage > 0) {
+            throw new Error('already planned');
+        }
+        this.#stage = 1;
+        return await Promise.all(
+            this.#conns.map((conn) =>
+                runner.plan(
+                    stack,
+                    conn,
+                    this.#hostTasks.get(conn.host.id) ?? [],
+                ),
+            ),
+        );
+    }
+
+    async execute(
+        plans: Plan[],
+        callback?: (event: Event) => void,
+    ): Promise<Result[]> {
+        if (this.#stage < 1) {
+            throw new Error('not yet planned');
+        }
+        if (this.#stage > 1) {
+            throw new Error('already executed');
+        }
+        this.#stage = 2;
+
+        // Execute all plans in parallel
+        const generators = plans.map((plan) => {
+            const conn = this.#conns.find((conn) => conn.host === plan.host)!;
+            const tasks = this.#hostTasks.get(plan.host.id) ?? [];
+            const changed: Set<string> = new Set();
+
+            plan.created.forEach(entry => void changed.add(entry));
+            plan.updated.forEach(entry => void changed.add(entry.id));
+            plan.deleted.forEach(entry => void changed.add(entry.id));
+            return runner.execute(conn, tasks.filter(task => changed.has(task.id)));
+        });
+
+        // Collect per-host results
+        const byHost = new Map<string, Result>(
+            plans.map((plan) => [
+                plan.host.id,
+                {
+                    host: plan.host.id,
+                    completed: [],
+                    skipped: [],
+                    errored: [],
+                },
+            ]),
+        );
+        for await (const event of mergeAsync(generators)) {
+            callback?.(event);
+            const result = byHost.get(event.host.id);
+            if (!result) {
+                throw new Error(`unknown host in event: ${event.host.id}`);
+            }
+            switch (event.status) {
+                case 'done':
+                    result.completed.push(event.taskId);
+                    break;
+                case 'skipped':
+                    result.skipped.push(event.taskId);
+                    break;
+                case 'error':
+                    result.errored.push({
+                        taskId: event.taskId,
+                        error: event.error ?? 'unknown',
+                    });
+                    break;
+            }
+        }
+
+        return [...byHost.values()];
+    }
+
+    async close(): Promise<void> {
+        await Promise.allSettled(this.#conns.map(conn => conn.close()));
+    }
+}
+
+/**
+ * Interactively plans or applies the current tasks on given hosts.
+ * This function reads CLI arguments and writes to console; if you need to
+ * inspect and apply plans programmatically, use the lower level TargetPool
+ * directly.
+ * @param stack Stack to apply tasks in.
+ * @param hosts List of hosts.
+ */
+export async function deploy(stack: string, hosts: Host[]): Promise<void> {
+    const options = getCliOptions(Bun.argv);
+    setupLogger((msg) => console.log(...msg.msg), options.logLevel); // TODO improve log formatting
+    const mode = options.mode;
+
     if (mode === 'printTasks') {
-        console.log(tasks); // TODO better UI
+        // Filter tasks to the hosts
+        // TODO refactor this out of deploy
+        const tasks: Map<string, Task[]> = new Map();
+        for (const host of hosts) {
+            tasks.set(
+                host.id,
+                filterTasks(builder.tasks, { ...host.tags, host: host.id }),
+            );
+        }
+        log.info(tasks); // TODO better UI
         return;
     } else if (mode === 'installAgent') {
         for (const host of hosts) {
@@ -92,7 +242,7 @@ export async function deploy(options: DeployOptions) {
                 '/opt/tunkki/tunkki',
             );
             if (!result) {
-                console.error(
+                log.error(
                     `Transport for ${host.id} does not support installAgent`,
                 );
             }
@@ -100,71 +250,22 @@ export async function deploy(options: DeployOptions) {
         return;
     }
 
-    // Connect to hosts. Use allSettled so a single failed connect doesn't
-    // strand the connections we did open.
-    if (options.interactive) {
-        console.log(`Connecting to hosts ${hosts.map((host) => host.id)}...`);
-    }
-    const settled = await Promise.allSettled(
-        hosts.map((host) => host.conn.connect()),
-    );
-    const targets: { conn: Connection; hostTasks: Task[] }[] = [];
-    const connectFailures: unknown[] = [];
-    for (const [i, result] of settled.entries()) {
-        const host = hosts[i]!;
-        if (result.status === 'fulfilled') {
-            if (options.interactive) {
-                console.log('Connected to', host.id);
-            }
-            targets.push({
-                conn: new Connection(result.value, host),
-                hostTasks: tasks.get(host.id)!,
-            });
-        } else {
-            connectFailures.push(result.reason);
-        }
-    }
+    const pool = await connect(hosts);
+    log.info('Connected to', hosts);
 
     try {
-        if (connectFailures.length > 0) {
-            throw new AggregateError(
-                connectFailures,
-                'failed to connect to one or more hosts',
-            );
-        }
-        console.log('Planning...');
-        const planned = await Promise.all(
-            targets.map(async ({ conn, hostTasks }) => ({
-                conn,
-                hostTasks,
-                plan: await plan(conn, hostTasks, { debug: options.debug }),
-            })),
-        );
-        console.log(planned.map((p) => p.plan));
+        const plans = await pool.plan(stack);
+        log.info(plans);
 
-        console.log('Applying...');
-        await Promise.all(
-            planned.map(({ conn, hostTasks, plan }) => {
-                // Get new and changed tasks...
-                const tasks = hostTasks.filter(
-                    (t) => !plan.unchanged.includes(t.id),
-                );
-                // and add deleted ones from the plan
-                for (const deleted of plan.deleted) {
-                    // Remove has old state of the task and will use it to actually perform deletion
-                    tasks.push({
-                        id: deleted.id,
-                        type: '$delete',
-                        applyOn: {},
-                        state: undefined,
-                    });
-                }
-                return execute(conn, tasks);
-            }),
-        );
-        console.log('Plan successfully applied.');
+        if (mode === 'apply' && confirm('Continue to deploy?')) {
+            // Execute plan if requested
+            const result = await pool.execute(plans, (event) => {
+                log.info(event);
+            });
+            log.info(result);
+        }
     } finally {
-        console.log('Closing connections...');
-        await Promise.allSettled(targets.map(({ conn }) => conn.close()));
+        log.debug('Disconnecting...');
+        await pool.close();
     }
 }

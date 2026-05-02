@@ -15,12 +15,7 @@ Bun.plugin({
 
 if (Bun.argv[2] === 'runner') {
     // We are subprocess of the SSH entrypoint. Our stdout is safe to print to, though discarded
-    const runner = new Runner(
-        '/opt/tunkki',
-        4,
-        process.env.TUNKKI_DEBUG === 'true',
-    );
-    await runner.loadState();
+    const runner = new Runner();
     for await (const event of readEvents(Bun.stdin.stream())) {
         await runner.handleEvent(event);
     }
@@ -39,9 +34,6 @@ if (Bun.argv[2] === 'runner') {
         stdout: 'ignore',
         stderr: 'pipe',
         stdin: 'pipe',
-        env: {
-            TUNKKI_DEBUG: Bun.argv[2] === '--debug' ? 'true' : undefined,
-        },
     });
     // Stream stderr to log file in background
     const logFile = Bun.file('/var/log/tunkki.log').writer();
@@ -54,14 +46,12 @@ if (Bun.argv[2] === 'runner') {
     })();
 
     // We send tasks raw stdin stream to avoid paying for deserialization twice.
-    // Cleanup must happen even if the loop throws (e.g. runner died early),
-    // otherwise the runner subprocess refs the event loop and the entrypoint
-    // hangs around forever.
     try {
         for await (const chunk of Bun.stdin.stream()) {
             await runner.stdin.write(chunk);
         }
     } finally {
+        // Cleanup must happen even if the loop throws (e.g. runner died early)
         await runner.stdin.end();
         await logDrain;
     }

@@ -1,13 +1,9 @@
-import type { Host } from '@bensku/tunkki';
 import type { TagSet } from '../common/task';
 import type { Task } from './task';
 
 export const tasks: Task[] = [];
 const idStack: string[] = [];
 const targetStack: TagSet[] = [];
-let sequentialCount = 0;
-
-export const hosts: Host[] = [];
 
 export function addTask(
     id: string,
@@ -15,16 +11,6 @@ export function addTask(
     state: unknown,
     dependsOn?: string[],
 ) {
-    if (sequentialCount !== 0) {
-        const prev = tasks.at(-1);
-        if (prev) {
-            if (dependsOn === undefined) {
-                dependsOn = [prev.id];
-            } else {
-                dependsOn.push(prev.id);
-            }
-        }
-    }
     tasks.push({
         id: idStack.join('.') + id,
         applyOn: targetStack.at(-1) ?? { host: '*' },
@@ -48,12 +34,4 @@ export function pushTargets(tags: TagSet) {
 
 export function popTargets() {
     targetStack.pop();
-}
-
-export function beginSequential() {
-    sequentialCount++;
-}
-
-export function endSequential() {
-    sequentialCount--;
 }

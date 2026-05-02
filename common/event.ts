@@ -4,6 +4,8 @@ interface BaseEvent {
     type: string;
 }
 
+export const CURRENT_PROTOCOL = 0;
+
 /**
  * Remote->local.
  */
@@ -12,8 +14,19 @@ interface Hello extends BaseEvent {
 
     /**
      * Protocol version the remote wants to speak.
+     * Local can reject
      */
     protocol: number;
+}
+
+/**
+ * Local->remote.
+ */
+interface Settings extends BaseEvent {
+    type: 'settings';
+    stack: string;
+    concurrency: number;
+    logLevel: number;
 }
 
 /**
@@ -158,6 +171,8 @@ interface Reset extends BaseEvent {
 }
 
 export type Event =
+    | Hello
+    | Settings
     | UploadHandlers
     | Task
     | TasksSent

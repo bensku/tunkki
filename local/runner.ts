@@ -1,9 +1,13 @@
+import type { Host } from '..';
 import type { StepStatus } from '../common/event';
+import { LOG_LEVEL, log } from '../common/log';
 import type { Step } from '../task';
 import type { Connection } from './connection';
 import { loadHandlerCode, loadSteps, type Task } from './task';
 
 export interface Plan {
+    host: Host;
+
     unchanged: string[];
     created: string[];
     updated: { id: string; oldState: unknown }[];
@@ -11,32 +15,36 @@ export interface Plan {
 }
 
 export async function plan(
+    stack: string,
     conn: Connection,
     tasks: Task[],
-    options: { debug?: boolean },
 ): Promise<Plan> {
+    // Configure the remote
+    await conn.send({
+        type: 'settings',
+        stack,
+        concurrency: 4, // TODO
+        logLevel: LOG_LEVEL,
+    });
+
     // Upload task handlers that will be needed to remote
     const handlers = await loadHandlerCode(tasks);
     await conn.send({
         type: 'uploadHandlers',
         handlers,
     });
-    if (options.debug) {
-        console.log('sent handlers');
-    }
 
     // Collect status events and wait for ready in background
     const plan = (async () => {
         const plan: Plan = {
+            host: conn.host,
             unchanged: [],
             created: [],
             updated: [],
             deleted: [],
         };
         for await (const event of conn.listen()) {
-            if (options.debug) {
-                console.log('received event', event);
-            }
+            log.debug('remote->local', event);
             switch (event.type) {
                 case 'status': {
                     switch (event.status) {
@@ -82,16 +90,25 @@ export async function plan(
     await conn.send({
         type: 'tasksSent',
     });
-    if (options.debug) {
-        console.log('all tasks sent');
-    }
 
     return plan;
 }
 
-export async function execute(conn: Connection, tasks: Task[]) {
+export interface Event {
+    host: Host;
+    type: 'completed';
+    taskId: string;
+    status: StepStatus;
+    error?: string;
+}
+
+// TODO streamed events
+export async function* execute(
+    conn: Connection,
+    tasks: Task[],
+): AsyncGenerator<Event> {
     if (tasks.length === 0) {
-        return;
+        return { completed: [], skipped: [], errored: [] };
     }
 
     // Load handlers locally, not all steps run on remote
@@ -99,8 +116,7 @@ export async function execute(conn: Connection, tasks: Task[]) {
 
     const taskMap: Map<string, Task> = new Map();
     const currentStep: Map<string, number> = new Map();
-    const completed: Map<string, StepStatus> = new Map();
-    const errors: Map<string, string> = new Map();
+    let completedCount = 0;
 
     // Start first step of each task
     for (const task of tasks) {
@@ -116,12 +132,24 @@ export async function execute(conn: Connection, tasks: Task[]) {
                 {
                     switch (event.status) {
                         case 'error':
-                            errors.set(event.id, event.result as string);
-                            completed.set(event.id, event.status);
+                            completedCount++;
+                            yield {
+                                host: conn.host,
+                                type: 'completed',
+                                taskId: event.id,
+                                status: 'error',
+                                error: event.result as string,
+                            };
                             break;
                         case 'skipped':
                             // Typically, tasks are skipped due to errored (transitive) dependencies
-                            completed.set(event.id, event.status);
+                            completedCount++;
+                            yield {
+                                host: conn.host,
+                                type: 'completed',
+                                taskId: event.id,
+                                status: 'skipped',
+                            };
                             break;
                         case 'done': {
                             const next = (currentStep.get(event.id) ?? 0) + 1;
@@ -129,7 +157,13 @@ export async function execute(conn: Connection, tasks: Task[]) {
                                 next ===
                                 steps[taskMap.get(event.id)!.type]?.length
                             ) {
-                                completed.set(event.id, 'done');
+                                completedCount++;
+                                yield {
+                                    host: conn.host,
+                                    type: 'completed',
+                                    taskId: event.id,
+                                    status: 'done',
+                                };
                             } else {
                                 const task = taskMap.get(event.id);
                                 if (!task) {
@@ -152,21 +186,9 @@ export async function execute(conn: Connection, tasks: Task[]) {
                 }
                 break;
         }
-        if (completed.size === tasks.length) {
+        if (completedCount === tasks.length) {
             break;
         }
-    }
-
-    if (completed.size !== tasks.length) {
-        throw new Error(
-            `connection closed with ${tasks.length - completed.size} task(s) outstanding`,
-        );
-    }
-    if (errors.size > 0) {
-        throw new AggregateError(
-            [...errors].map(([id, msg]) => new Error(`${id}: ${msg}`)),
-            'one or more tasks failed',
-        );
     }
 }
 

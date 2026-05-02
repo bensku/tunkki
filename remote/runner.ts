@@ -1,11 +1,12 @@
 import * as fs from 'node:fs/promises';
 import { type Event, writeEvent } from '../common/event';
+import { log, setupLogger } from '../common/log';
 import type { TaskHandler } from '../common/task';
 import { Semaphore } from './util';
 
 export class Runner {
-    #handlerDir: string;
-    #stateDir: string;
+    #handlerDir: string | undefined;
+    #stateDir: string | undefined;
 
     /**
      * Current state on this remote.
@@ -52,35 +53,31 @@ export class Runner {
      */
     #pending: Map<string, RunEvent>;
 
-    #taskSlots: Semaphore;
+    #taskSlots: Semaphore | undefined;
     #saveLock: Semaphore;
 
-    #debug: boolean;
-
-    constructor(workDir: string, concurrency: number, debug: boolean) {
-        this.#handlerDir = `${workDir}/handlers`;
-        this.#stateDir = `${workDir}/state`;
+    constructor() {
         this.#seenTasks = new Set();
         this.#tasks = new Map();
         this.#dependents = new Map();
         this.#completed = new Set();
         this.#failed = new Set();
         this.#pending = new Map();
-        this.#taskSlots = new Semaphore(concurrency);
         this.#saveLock = new Semaphore(1);
-        this.#debug = debug;
     }
 
-    async loadState() {
+    async #loadConfig(workDir: string, concurrency: number) {
+        this.#handlerDir = `${workDir}/handlers`;
+        this.#stateDir = `${workDir}/state`;
+        this.#taskSlots = new Semaphore(concurrency);
+
         const file = Bun.file(`${this.#stateDir}/current.json`);
         if (!(await file.exists())) {
             this.#state = {}; // No state file, possibly first ever deploy
         } else {
             this.#state = await file.json();
         }
-        if (this.#debug) {
-            console.error('loaded local state from', file.name);
-        }
+        log.debug('loaded local state', 'file', file.name);
     }
 
     async #saveState() {
@@ -95,19 +92,24 @@ export class Runner {
                 `${this.#stateDir}/next.json`,
                 `${this.#stateDir}/current.json`,
             );
-            if (this.#debug) {
-                console.error('saved state locally');
-            }
+            log.debug('saved state', 'file', `${this.#stateDir}/current.json`);
         } finally {
             release();
         }
     }
 
     async handleEvent(event: Event) {
-        if (this.#debug) {
-            console.error('handling event', event);
-        }
+        log.debug('local->remote', 'event', event);
         switch (event.type) {
+            case 'settings':
+                // Local sends configuration to us
+                setupLogger((msg) => console.error(...msg.msg), event.logLevel);
+                await this.#loadConfig(
+                    `/opt/tunkki/${event.stack}`,
+                    event.concurrency,
+                );
+                log.info('configured', 'stack', event.stack, 'concurrency', event.concurrency, 'logLevel', event.logLevel);
+                break;
             case 'uploadHandlers': {
                 // Write handlers to disk, overwriting old ones if needed
                 for (const [name, code] of Object.entries(event.handlers)) {
@@ -201,17 +203,34 @@ export class Runner {
                 reply({
                     type: 'ready',
                 });
+                log.info('all tasks received');
                 break;
             }
             case 'run': {
                 if (event.step === 0) {
-                    const task = this.#tasks.get(event.id)!;
+                    const task = this.#tasks.get(event.id);
+                    if (!task) {
+                        throw new Error(`missing task: ${event.id}`);
+                    }
                     const deps = task.dependsOn ?? [];
 
                     // If any of dependencies have failed, immediately skip this due to failure
                     for (const dep of deps) {
                         if (this.#failed.has(dep)) {
+                            reply({
+                                type: 'done',
+                                id: event.id,
+                                result: undefined,
+                                status: 'skipped',
+                            });
                             this.#markFailed(event.id);
+                            log.info(
+                                'skipped task due to dependency error',
+                                'task',
+                                event.id,
+                                'dependency',
+                                dep,
+                            );
                             return;
                         }
                     }
@@ -220,6 +239,11 @@ export class Runner {
                     for (const dep of deps) {
                         if (!this.#completed.has(dep)) {
                             this.#pending.set(event.id, event);
+                            log.debug(
+                                'dependencies not ready, marked as pending',
+                                'task',
+                                event.id,
+                            );
                             return;
                         }
                     }
@@ -242,9 +266,12 @@ export class Runner {
     }
 
     async #dispatchRun(event: RunEvent) {
-        const release = await this.#taskSlots.acquire();
+        const release = await this.#taskSlots!.acquire();
         try {
-            const task = this.#tasks.get(event.id)!;
+            const task = this.#tasks.get(event.id);
+            if (!task) {
+                throw new Error(`missing task: ${event.id}`);
+            }
             const steps = Array.isArray(task.handler.apply)
                 ? task.handler.apply
                 : [task.handler.apply];
@@ -258,6 +285,7 @@ export class Runner {
                         await task?.recreateWith?.cleanup(
                             this.#state[event.id],
                         );
+                        log.info('cleanup due to recreate', 'task', event.id);
                     }
                     // And then we can apply the first step with state stored locally
                     if (task.state === undefined) {
@@ -266,15 +294,33 @@ export class Runner {
                             await task.handler.cleanup(this.#state[event.id]);
                         }
                         result = undefined;
+                        log.info('cleanup due to delete', 'task', event.id);
                     } else {
                         // Just apply create/update for first step
                         result = await steps[0]!.handler(task.state);
+                        log.info('executed step', 'task', event.id, 'step', 0);
                     }
                 } else {
                     // For subsequent steps, we've been passed the state
                     result = await steps[event.step]!.handler(event.state);
+                    log.info(
+                        'executed step',
+                        'task',
+                        event.id,
+                        'step',
+                        event.step,
+                    );
                 }
             } catch (e) {
+                log.error(
+                    'failed task step',
+                    'task',
+                    event.id,
+                    'step',
+                    event.step,
+                    'error',
+                    e,
+                );
                 result = `${e}`;
                 errored = true;
             }
@@ -291,7 +337,7 @@ export class Runner {
                 this.#markFailed(event.id);
             } else if (task.state === undefined) {
                 // Task was deleted
-                delete this.#state[event.id]
+                delete this.#state[event.id];
                 await this.#saveState();
             } else if (event.step === steps.length - 1) {
                 // Last step executed successfully, save state and mark as completed
@@ -319,7 +365,10 @@ export class Runner {
         outer: for (const id of dependents) {
             const pendingEvent = this.#pending.get(id);
             if (pendingEvent) {
-                const task = this.#tasks.get(id)!;
+                const task = this.#tasks.get(id);
+                if (!task) {
+                    throw new Error(`missing task: ${id}`);
+                }
                 for (const dep of task.dependsOn ?? []) {
                     if (!this.#completed.has(dep)) {
                         continue outer; // Other dependencies not yet completed
@@ -366,5 +415,6 @@ interface TaskState {
 }
 
 function reply(event: Event) {
+    log.debug('remote->local', 'event', event);
     process.send!(writeEvent(event));
 }
