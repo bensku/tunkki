@@ -1,7 +1,8 @@
 import { deploy, podman, protocols } from '@bensku/tunkki';
 
-podman.pod('test-nginx', {});
-podman.pod('foo', {});
+const pod2 = podman.pod('foo', {});
+const pod1 = podman.pod('test-nginx', { foo: '123' }, [pod2.id]);
+podman.pod('foobar', {}, [pod2.id]);
 
 deploy('test', [
     {

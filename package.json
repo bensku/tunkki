@@ -5,8 +5,17 @@
         ".": "./index.ts",
         "./task": "./task/index.ts"
     },
+    "files": [
+        "index.ts",
+        "protocol.ts",
+        "common",
+        "local",
+        "task",
+        "tunkki"
+    ],
     "scripts": {
-        "check": "biome check --fix"
+        "check": "biome check --fix",
+        "prepublishOnly": "bun build.ts"
     },
     "type": "module",
     "devDependencies": {

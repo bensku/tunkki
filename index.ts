@@ -1,7 +1,6 @@
-import { log, setupLogger } from './common/log';
 import type { TagSet } from './common/task';
 import * as builder from './local/builder';
-import { getCliOptions } from './local/cli';
+import { runCli } from './local/cli';
 import { Connection } from './local/connection';
 import * as runner from './local/runner';
 import { filterTasks, type Task } from './local/task';
@@ -128,7 +127,7 @@ export class TargetPool {
         this.#hostTasks = hostTasks;
     }
 
-    async plan(stack: string): Promise<Plan[]> {
+    async plan(stack: string, destroy?: boolean): Promise<Plan[]> {
         if (this.#stage > 0) {
             throw new Error('already planned');
         }
@@ -138,7 +137,7 @@ export class TargetPool {
                 runner.plan(
                     stack,
                     conn,
-                    this.#hostTasks.get(conn.host.id) ?? [],
+                    destroy ? [] : (this.#hostTasks.get(conn.host.id) ?? []),
                 ),
             ),
         );
@@ -162,10 +161,13 @@ export class TargetPool {
             const tasks = this.#hostTasks.get(plan.host.id) ?? [];
             const changed: Set<string> = new Set();
 
-            plan.created.forEach(entry => void changed.add(entry));
-            plan.updated.forEach(entry => void changed.add(entry.id));
-            plan.deleted.forEach(entry => void changed.add(entry.id));
-            return runner.execute(conn, tasks.filter(task => changed.has(task.id)));
+            plan.created.forEach((entry) => void changed.add(entry));
+            plan.updated.forEach((entry) => void changed.add(entry.id));
+            plan.deleted.forEach((entry) => void changed.add(entry.id));
+            return runner.execute(
+                conn,
+                tasks.filter((task) => changed.has(task.id)),
+            );
         });
 
         // Collect per-host results
@@ -206,66 +208,18 @@ export class TargetPool {
     }
 
     async close(): Promise<void> {
-        await Promise.allSettled(this.#conns.map(conn => conn.close()));
+        await Promise.allSettled(this.#conns.map((conn) => conn.close()));
     }
 }
 
 /**
- * Interactively plans or applies the current tasks on given hosts.
- * This function reads CLI arguments and writes to console; if you need to
- * inspect and apply plans programmatically, use the lower level TargetPool
- * directly.
+ * Plan, apply, destroy, list tasks, or install the agent — driven by CLI
+ * subcommands read from `Bun.argv`. This is the entry point a user's
+ * deployment script calls. To inspect and apply plans programmatically,
+ * use the lower-level `connect()` / `TargetPool` directly instead.
  * @param stack Stack to apply tasks in.
  * @param hosts List of hosts.
  */
 export async function deploy(stack: string, hosts: Host[]): Promise<void> {
-    const options = getCliOptions(Bun.argv);
-    setupLogger((msg) => console.log(...msg.msg), options.logLevel); // TODO improve log formatting
-    const mode = options.mode;
-
-    if (mode === 'printTasks') {
-        // Filter tasks to the hosts
-        // TODO refactor this out of deploy
-        const tasks: Map<string, Task[]> = new Map();
-        for (const host of hosts) {
-            tasks.set(
-                host.id,
-                filterTasks(builder.tasks, { ...host.tags, host: host.id }),
-            );
-        }
-        log.info(tasks); // TODO better UI
-        return;
-    } else if (mode === 'installAgent') {
-        for (const host of hosts) {
-            const result = await host.conn.upload(
-                `${import.meta.dir}/tunkki`,
-                '/opt/tunkki/tunkki',
-            );
-            if (!result) {
-                log.error(
-                    `Transport for ${host.id} does not support installAgent`,
-                );
-            }
-        }
-        return;
-    }
-
-    const pool = await connect(hosts);
-    log.info('Connected to', hosts);
-
-    try {
-        const plans = await pool.plan(stack);
-        log.info(plans);
-
-        if (mode === 'apply' && confirm('Continue to deploy?')) {
-            // Execute plan if requested
-            const result = await pool.execute(plans, (event) => {
-                log.info(event);
-            });
-            log.info(result);
-        }
-    } finally {
-        log.debug('Disconnecting...');
-        await pool.close();
-    }
+    await runCli(stack, hosts);
 }

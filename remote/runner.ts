@@ -108,7 +108,15 @@ export class Runner {
                     `/opt/tunkki/${event.stack}`,
                     event.concurrency,
                 );
-                log.info('configured', 'stack', event.stack, 'concurrency', event.concurrency, 'logLevel', event.logLevel);
+                log.info(
+                    'configured',
+                    'stack',
+                    event.stack,
+                    'concurrency',
+                    event.concurrency,
+                    'logLevel',
+                    event.logLevel,
+                );
                 break;
             case 'uploadHandlers': {
                 // Write handlers to disk, overwriting old ones if needed
