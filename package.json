@@ -3,7 +3,8 @@
     "module": "index.ts",
     "exports": {
         ".": "./index.ts",
-        "./task": "./task/index.ts"
+        "./task": "./task/index.ts",
+        "./task/util": "./task/util/index.ts"
     },
     "files": [
         "index.ts",

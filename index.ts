@@ -159,11 +159,26 @@ export class TargetPool {
         const generators = plans.map((plan) => {
             const conn = this.#conns.find((conn) => conn.host === plan.host)!;
             const tasks = this.#hostTasks.get(plan.host.id) ?? [];
+            
+            const existing: Set<string> = new Set();
+            tasks.forEach((task) => void existing.add(task.id));
+            
             const changed: Set<string> = new Set();
-
             plan.created.forEach((entry) => void changed.add(entry));
             plan.updated.forEach((entry) => void changed.add(entry.id));
-            plan.deleted.forEach((entry) => void changed.add(entry.id));
+            plan.deleted.forEach((entry) => {
+                // If task does not exist locally, create one with dummy data
+                // Remote has the old real state available for cleanup
+                if (!existing.has(entry.id)) {
+                    tasks.push({
+                        id: entry.id,
+                        type: '$delete',
+                        applyOn: {},
+                        state: undefined,
+                    });
+                }
+                changed.add(entry.id);
+            });
             return runner.execute(
                 conn,
                 tasks.filter((task) => changed.has(task.id)),

@@ -1,4 +1,5 @@
 import * as tunkkiTask from '@bensku/tunkki/task';
+import * as taskUtil from '@bensku/tunkki/task/util';
 import { readEvents } from '../common/event';
 import { Runner } from './runner';
 
@@ -8,6 +9,10 @@ Bun.plugin({
     setup(build) {
         build.module('@bensku/tunkki/task', () => ({
             exports: tunkkiTask,
+            loader: 'object',
+        }));
+        build.module('@bensku/tunkki/task/util', () => ({
+            exports: taskUtil,
             loader: 'object',
         }));
     },

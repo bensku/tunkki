@@ -291,7 +291,7 @@ export class Runner {
                     if (task?.recreateWith?.cleanup) {
                         // If task changed handler, we'll need to first cleanup using old handler
                         await task?.recreateWith?.cleanup(
-                            this.#state[event.id],
+                            this.#state[event.id]?.state,
                         );
                         log.info('cleanup due to recreate', 'task', event.id);
                     }
@@ -299,7 +299,7 @@ export class Runner {
                     if (task.state === undefined) {
                         // Deleting? Cleanup if the handler can do that
                         if (task.handler.cleanup) {
-                            await task.handler.cleanup(this.#state[event.id]);
+                            await task.handler.cleanup(this.#state[event.id]?.state);
                         }
                         result = undefined;
                         log.info('cleanup due to delete', 'task', event.id);

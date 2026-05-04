@@ -1,8 +1,15 @@
 import { deploy, podman, protocols } from '@bensku/tunkki';
 
-const pod2 = podman.pod('foo', {});
-const pod1 = podman.pod('test-nginx', { foo: '123' }, [pod2.id]);
-podman.pod('foobar', {}, [pod2.id]);
+podman.container('test-nginx', {
+    name: 'nginx',
+    image: 'docker.io/nginx:latest',
+    publishPort: [
+        {
+            containerPort: 80,
+            hostPort: 80,
+        },
+    ],
+});
 
 deploy('test', [
     {
