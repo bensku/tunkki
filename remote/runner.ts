@@ -299,7 +299,9 @@ export class Runner {
                     if (task.state === undefined) {
                         // Deleting? Cleanup if the handler can do that
                         if (task.handler.cleanup) {
-                            await task.handler.cleanup(this.#state[event.id]?.state);
+                            await task.handler.cleanup(
+                                this.#state[event.id]?.state,
+                            );
                         }
                         result = undefined;
                         log.info('cleanup due to delete', 'task', event.id);

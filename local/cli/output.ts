@@ -46,12 +46,18 @@ export function printPlan(
 
         const entries: { id: string; line: string; body?: string[] }[] = [];
 
+        const labelFor = (task: Task | undefined): string => {
+            if (!task) return '';
+            const parts = [c.dim(`(${task.type})`)];
+            if (task.rolling) parts.push(c.cyan('rolling'));
+            return parts.join(' ');
+        };
+
         for (const id of [...plan.created].sort()) {
             const task = taskById.get(id);
-            const typeLabel = task ? c.dim(`(${task.type})`) : '';
             entries.push({
                 id,
-                line: `  ${c.green('+')} ${id} ${typeLabel}`.trimEnd(),
+                line: `  ${c.green('+')} ${id} ${labelFor(task)}`.trimEnd(),
                 body:
                     task !== undefined
                         ? renderDiff(undefined, task.state, c, 4)
@@ -64,11 +70,10 @@ export function printPlan(
             a.id.localeCompare(b.id),
         )) {
             const task = taskById.get(upd.id);
-            const typeLabel = task ? c.dim(`(${task.type})`) : '';
             const newState = task?.state;
             entries.push({
                 id: upd.id,
-                line: `  ${c.yellow('~')} ${upd.id} ${typeLabel}`.trimEnd(),
+                line: `  ${c.yellow('~')} ${upd.id} ${labelFor(task)}`.trimEnd(),
                 body: renderDiff(upd.oldState, newState, c, 4),
             });
             totalChange++;
@@ -87,9 +92,11 @@ export function printPlan(
 
         if (opts.showUnchanged) {
             for (const id of [...plan.unchanged].sort()) {
+                const task = taskById.get(id);
+                const rolling = task?.rolling ? ` ${c.cyan('rolling')}` : '';
                 entries.push({
                     id,
-                    line: c.dim(`  = ${id}`),
+                    line: `${c.dim(`  = ${id}`)}${rolling}`,
                 });
             }
         }
@@ -117,6 +124,9 @@ export function printPlan(
 
 export function liveProgress(event: Event, opts: OutputOptions): void {
     if (opts.quiet || opts.json) return;
+    // hostCompleted is an internal signal for rolling-task rollover; the
+    // user-facing progress line is the matching `completed` event.
+    if (event.type !== 'completed') return;
     const c = makeColor(opts.color);
     let icon: string;
     switch (event.status) {

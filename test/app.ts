@@ -1,15 +1,19 @@
 import { deploy, podman, protocols } from '@bensku/tunkki';
 
-podman.container('test-nginx', {
-    name: 'nginx',
-    image: 'docker.io/nginx:latest',
-    publishPort: [
-        {
-            containerPort: 80,
-            hostPort: 80,
-        },
-    ],
-});
+podman.container(
+    'test-nginx',
+    {
+        name: 'nginx',
+        image: 'docker.io/nginx:latest',
+        publishPort: [
+            {
+                containerPort: 80,
+                hostPort: 80,
+            },
+        ],
+    },
+    { rolling: true },
+);
 
 deploy('test', [
     {

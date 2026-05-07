@@ -28,6 +28,11 @@ export interface Task {
      * ids of those other tasks.
      */
     dependsOn?: string[];
+
+    /**
+     * If this task is rolling. A rolling task must be executed host-by-host.
+     */
+    rolling?: boolean;
 }
 
 /**

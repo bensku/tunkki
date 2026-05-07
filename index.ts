@@ -155,14 +155,16 @@ export class TargetPool {
         }
         this.#stage = 2;
 
-        // Execute all plans in parallel
+        // Execute normal tasks in parallel
+        // First connection also starts rolling tasks
         const generators = plans.map((plan) => {
             const conn = this.#conns.find((conn) => conn.host === plan.host)!;
             const tasks = this.#hostTasks.get(plan.host.id) ?? [];
-            
+
+            // Figure out which tasks we should tell remote to execute
             const existing: Set<string> = new Set();
             tasks.forEach((task) => void existing.add(task.id));
-            
+
             const changed: Set<string> = new Set();
             plan.created.forEach((entry) => void changed.add(entry));
             plan.updated.forEach((entry) => void changed.add(entry.id));
@@ -179,13 +181,27 @@ export class TargetPool {
                 }
                 changed.add(entry.id);
             });
-            return runner.execute(
-                conn,
-                tasks.filter((task) => changed.has(task.id)),
-            );
+            const changedTasks = tasks.filter((task) => changed.has(task.id));
+
+            return runner.execute(conn, changedTasks, this.#conns[0] === conn);
         });
 
-        // Collect per-host results
+        const rollToNext = (prev: Host, id: string) => {
+            // Start task on next connection!
+            const idx = this.#conns.findIndex((conn) => conn.host === prev);
+            const next = this.#conns[idx + 1];
+            if (next) {
+                next.sendToSelf({
+                    type: 'run',
+                    id,
+                    // Neither step or state are actually used by runner
+                    step: -1,
+                    state: undefined,
+                });
+            }
+        };
+
+        // Collect per-host results and start rolling tasks as they complete in previous hosts
         const byHost = new Map<string, Result>(
             plans.map((plan) => [
                 plan.host.id,
@@ -199,23 +215,36 @@ export class TargetPool {
         );
         for await (const event of mergeAsync(generators)) {
             callback?.(event);
-            const result = byHost.get(event.host.id);
-            if (!result) {
-                throw new Error(`unknown host in event: ${event.host.id}`);
-            }
-            switch (event.status) {
-                case 'done':
-                    result.completed.push(event.taskId);
+            switch (event.type) {
+                case 'completed': {
+                    const result = byHost.get(event.host.id);
+                    if (!result) {
+                        throw new Error(
+                            `unknown host in event: ${event.host.id}`,
+                        );
+                    }
+                    switch (event.status) {
+                        case 'done':
+                            result.completed.push(event.taskId);
+                            break;
+                        case 'skipped':
+                            result.skipped.push(event.taskId);
+                            break;
+                        case 'error':
+                            result.errored.push({
+                                taskId: event.taskId,
+                                error: event.error ?? 'unknown',
+                            });
+                            break;
+                    }
                     break;
-                case 'skipped':
-                    result.skipped.push(event.taskId);
+                }
+                case 'hostCompleted': {
+                    // Rolling task finished on one host, put it to next one
+                    // FIXME currently even if there is an error, what could go wrong?
+                    rollToNext(event.host, event.taskId);
                     break;
-                case 'error':
-                    result.errored.push({
-                        taskId: event.taskId,
-                        error: event.error ?? 'unknown',
-                    });
-                    break;
+                }
             }
         }
 

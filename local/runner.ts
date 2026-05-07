@@ -96,16 +96,16 @@ export async function plan(
 
 export interface Event {
     host: Host;
-    type: 'completed';
+    type: 'completed' | 'hostCompleted';
     taskId: string;
     status: StepStatus;
     error?: string;
 }
 
-// TODO streamed events
 export async function* execute(
     conn: Connection,
     tasks: Task[],
+    rollFirst: boolean,
 ): AsyncGenerator<Event> {
     if (tasks.length === 0) {
         return { completed: [], skipped: [], errored: [] };
@@ -121,7 +121,9 @@ export async function* execute(
     // Start first step of each task
     for (const task of tasks) {
         taskMap.set(task.id, task);
-        await runStep(conn, steps, task, 0, task.state);
+        if (!task.rolling || rollFirst) {
+            await runStep(conn, steps, task, 0, task.state);
+        }
     }
 
     // Listen to events from remote.
@@ -130,6 +132,7 @@ export async function* execute(
         switch (event.type) {
             case 'done':
                 {
+                    const task = taskMap.get(event.id)!;
                     switch (event.status) {
                         case 'error':
                             completedCount++;
@@ -140,6 +143,14 @@ export async function* execute(
                                 status: 'error',
                                 error: event.result as string,
                             };
+                            if (task.rolling) {
+                                yield {
+                                    host: conn.host,
+                                    type: 'hostCompleted',
+                                    taskId: event.id,
+                                    status: 'error',
+                                };
+                            }
                             break;
                         case 'skipped':
                             // Typically, tasks are skipped due to errored (transitive) dependencies
@@ -150,13 +161,20 @@ export async function* execute(
                                 taskId: event.id,
                                 status: 'skipped',
                             };
+                            if (task.rolling) {
+                                // This kind of skipped task should be treated as an error that stops
+                                // the rolling deploy!
+                                yield {
+                                    host: conn.host,
+                                    type: 'hostCompleted',
+                                    taskId: event.id,
+                                    status: 'error',
+                                };
+                            }
                             break;
                         case 'done': {
                             const next = (currentStep.get(event.id) ?? 0) + 1;
-                            if (
-                                next ===
-                                steps[taskMap.get(event.id)!.type]?.length
-                            ) {
+                            if (next === steps[task.type]?.length) {
                                 completedCount++;
                                 yield {
                                     host: conn.host,
@@ -164,13 +182,15 @@ export async function* execute(
                                     taskId: event.id,
                                     status: 'done',
                                 };
-                            } else {
-                                const task = taskMap.get(event.id);
-                                if (!task) {
-                                    throw new Error(
-                                        `unknown task id from remote: ${event.id}`,
-                                    );
+                                if (task.rolling) {
+                                    yield {
+                                        host: conn.host,
+                                        type: 'hostCompleted',
+                                        taskId: event.id,
+                                        status: 'done',
+                                    };
                                 }
+                            } else {
                                 currentStep.set(event.id, next);
                                 await runStep(
                                     conn,
@@ -185,6 +205,25 @@ export async function* execute(
                     }
                 }
                 break;
+            case 'run': {
+                // Local self-sends run events to support rolling tasks
+                // As rolling tasks are completed, next hosts can begin executing them
+                const task = taskMap.get(event.id);
+                // Rolling tasks don't necessarily apply on all hosts
+                if (task) {
+                    // We'll report to caller once the task is done
+                    await runStep(conn, steps, task, 0, task.state);
+                } else {
+                    // Report to caller immediately!
+                    yield {
+                        host: conn.host,
+                        type: 'hostCompleted',
+                        taskId: event.id,
+                        status: 'skipped',
+                    };
+                }
+                break;
+            }
         }
         if (completedCount === tasks.length) {
             break;

@@ -9,7 +9,8 @@ export function addTask(
     id: string,
     task: string,
     state: unknown,
-    dependsOn?: string[],
+    dependsOn: string[] | undefined,
+    rolling: boolean,
 ) {
     tasks.push({
         id: idStack.join('.') + id,
@@ -17,6 +18,7 @@ export function addTask(
         state,
         type: task,
         dependsOn,
+        rolling,
     });
 }
 
