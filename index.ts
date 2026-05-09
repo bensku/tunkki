@@ -8,6 +8,7 @@ import type { Connector } from './protocol';
 
 export * as protocols from './protocol';
 export * as podman from './task/podman';
+export * as systemd from './task/systemd';
 
 /**
  * Groups tasks together. Tasks inside a group get then group's id as prefix

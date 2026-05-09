@@ -274,3 +274,24 @@ export function withDefaults(
     }
     return out;
 }
+
+/**
+ * Argv-style command. Strings are passed through verbatim; arrays are joined
+ * with shell-style double quoting compatible with systemd's command-line
+ * parser, so callers do not need to escape spaces or quotes themselves.
+ */
+export type CommandSpec = string | string[];
+
+export function renderCommand(
+    input: CommandSpec | undefined,
+): string | undefined {
+    if (input === undefined) return undefined;
+    if (typeof input === 'string') return input;
+    return input.map(quoteArg).join(' ');
+}
+
+function quoteArg(arg: string): string {
+    if (arg === '') return '""';
+    if (/^[A-Za-z0-9_\-./@:=+,%]+$/.test(arg)) return arg;
+    return `"${arg.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
+}

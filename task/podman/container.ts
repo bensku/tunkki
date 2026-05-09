@@ -2,27 +2,6 @@ import { step } from '@bensku/tunkki/task';
 import { podman, systemd } from '@bensku/tunkki/task/util';
 import { $ } from 'bun';
 
-/**
- * Argv-style command. Strings are passed through verbatim; arrays are joined
- * with shell-style double quoting compatible with systemd's command-line
- * parser, so callers do not need to escape spaces or quotes themselves.
- */
-export type CommandSpec = string | string[];
-
-export function renderCommand(
-    input: CommandSpec | undefined,
-): string | undefined {
-    if (input === undefined) return undefined;
-    if (typeof input === 'string') return input;
-    return input.map(quoteArg).join(' ');
-}
-
-function quoteArg(arg: string): string {
-    if (arg === '') return '""';
-    if (/^[A-Za-z0-9_\-./@:=+,%]+$/.test(arg)) return arg;
-    return `"${arg.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
-}
-
 /** Structured `Tmpfs=` entry. */
 export type TmpfsEntry = {
     /** Mount target inside the container. */
@@ -96,7 +75,7 @@ export type ContainerHealth = {
      * string to disable an inherited image healthcheck. Pass a `string[]` to
      * supply argv directly without worrying about shell quoting.
      */
-    cmd?: CommandSpec;
+    cmd?: systemd.CommandSpec;
     /** `HealthInterval=` — interval between healthcheck runs (e.g. `30s`, `1m`). */
     interval?: string;
     /** `HealthRetries=` — consecutive failed runs required before the container is marked unhealthy. */
@@ -143,12 +122,12 @@ export type State = {
      * overriding the image's `CMD`. Pass a `string[]` to supply argv directly
      * without worrying about shell quoting.
      */
-    exec?: CommandSpec;
+    exec?: systemd.CommandSpec;
     /**
      * `Entrypoint=` — overrides the image's `ENTRYPOINT`. Same shape rules as
      * {@link exec}.
      */
-    entrypoint?: CommandSpec;
+    entrypoint?: systemd.CommandSpec;
 
     /** `Environment=` — environment variables set inside the container. Each entry is emitted as `Environment=KEY=VALUE`. */
     environment?: Record<string, string>;
@@ -297,8 +276,8 @@ export function toContainerUnit(spec: State): systemd.UnitFile {
         Pod: spec.pod,
         StartWithPod: spec.startWithPod,
 
-        Exec: renderCommand(spec.exec),
-        Entrypoint: renderCommand(spec.entrypoint),
+        Exec: systemd.renderCommand(spec.exec),
+        Entrypoint: systemd.renderCommand(spec.entrypoint),
 
         Environment: spec.environment,
         EnvironmentFile: spec.environmentFile,
@@ -342,7 +321,7 @@ export function toContainerUnit(spec: State): systemd.UnitFile {
         Pull: spec.pull,
         Timezone: spec.timezone,
 
-        HealthCmd: renderCommand(spec.health?.cmd),
+        HealthCmd: systemd.renderCommand(spec.health?.cmd),
         HealthInterval: spec.health?.interval,
         HealthRetries: spec.health?.retries,
         HealthStartPeriod: spec.health?.startPeriod,

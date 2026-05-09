@@ -19,14 +19,7 @@ deploy('test', [
     {
         id: 'test1',
         conn: protocols.proxyCmd(
-            [
-                'limactl',
-                'shell',
-                'test1',
-                'sudo',
-                '/opt/tunkki/tunkki',
-                '--debug',
-            ],
+            ['limactl', 'shell', 'test1', 'sudo', '/opt/tunkki/tunkki'],
             [
                 'sh',
                 '-c',
@@ -37,14 +30,7 @@ deploy('test', [
     {
         id: 'test2',
         conn: protocols.proxyCmd(
-            [
-                'limactl',
-                'shell',
-                'test2',
-                'sudo',
-                '/opt/tunkki/tunkki',
-                '--debug',
-            ],
+            ['limactl', 'shell', 'test2', 'sudo', '/opt/tunkki/tunkki'],
             [
                 'sh',
                 '-c',
@@ -55,14 +41,7 @@ deploy('test', [
     {
         id: 'test3',
         conn: protocols.proxyCmd(
-            [
-                'limactl',
-                'shell',
-                'test3',
-                'sudo',
-                '/opt/tunkki/tunkki',
-                '--debug',
-            ],
+            ['limactl', 'shell', 'test3', 'sudo', '/opt/tunkki/tunkki'],
             [
                 'sh',
                 '-c',
