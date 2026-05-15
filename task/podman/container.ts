@@ -355,7 +355,7 @@ export const apply = step('remote', async (state: State) => {
     const containerName = state.pod ? `${state.pod}-${state.name}` : state.name;
     await Bun.write(`/etc/containers/systemd/${containerName}.container`, data);
     await $`systemctl daemon-reload`;
-    await $`systemctl restart ${state.name}`;
+    await $`systemctl restart ${containerName}`;
 });
 
 export const cleanup = async (state: State) => {
