@@ -105,6 +105,7 @@ export interface Event {
 export async function* execute(
     conn: Connection,
     tasks: Task[],
+    oldStates: Map<string, unknown>,
     rollFirst: boolean,
 ): AsyncGenerator<Event> {
     if (tasks.length === 0) {
@@ -122,7 +123,14 @@ export async function* execute(
     for (const task of tasks) {
         taskMap.set(task.id, task);
         if (!task.rolling || rollFirst) {
-            await runStep(conn, steps, task, 0, task.state);
+            await runStep(
+                conn,
+                steps,
+                task,
+                0,
+                task.state,
+                oldStates.get(task.id),
+            );
         }
     }
 
@@ -212,7 +220,14 @@ export async function* execute(
                 // Rolling tasks don't necessarily apply on all hosts
                 if (task) {
                     // We'll report to caller once the task is done
-                    await runStep(conn, steps, task, 0, task.state);
+                    await runStep(
+                        conn,
+                        steps,
+                        task,
+                        0,
+                        task.state,
+                        oldStates.get(task.id),
+                    );
                 } else {
                     // Report to caller immediately!
                     yield {
@@ -237,6 +252,7 @@ async function runStep(
     task: Task,
     stepIdx: number,
     state: unknown,
+    oldState?: unknown,
 ) {
     const taskSteps = steps[task.type];
     if (!taskSteps) {
@@ -252,7 +268,12 @@ async function runStep(
             let result: unknown;
             let error: unknown;
             try {
-                result = await step.handler(state);
+                // oldState is only meaningful for step 0 of an update;
+                // subsequent steps receive their predecessor's result as state.
+                result =
+                    stepIdx === 0
+                        ? await step.handler(state, oldState)
+                        : await step.handler(state);
             } catch (e) {
                 error = e;
             }

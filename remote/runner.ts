@@ -307,7 +307,10 @@ export class Runner {
                         log.info('cleanup due to delete', 'task', event.id);
                     } else {
                         // Just apply create/update for first step
-                        result = await steps[0]!.handler(task.state);
+                        result = await steps[0]!.handler(
+                            task.state,
+                            this.#state[event.id]?.state,
+                        );
                         log.info('executed step', 'task', event.id, 'step', 0);
                     }
                 } else {

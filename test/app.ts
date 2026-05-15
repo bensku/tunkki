@@ -1,4 +1,4 @@
-import { deploy, podman, protocols } from '@bensku/tunkki';
+import { deploy, files, podman, protocols } from '@bensku/tunkki';
 
 podman.container(
     'test-nginx',
@@ -14,6 +14,16 @@ podman.container(
     },
     { rolling: true },
 );
+
+files.put('test-upload', {
+    localPath: 'index.ts',
+    remotePath: '/var/test/index.ts',
+    mode: 0o777,
+});
+files.put('test-write', {
+    content: 'hello!',
+    remotePath: '/var/test/hello.txt',
+});
 
 deploy('test', [
     {

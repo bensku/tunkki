@@ -7,6 +7,7 @@ import { filterTasks, type Task } from './local/task';
 import type { Connector } from './protocol';
 
 export * as protocols from './protocol';
+export * as files from './task/files';
 export * as podman from './task/podman';
 export * as systemd from './task/systemd';
 
@@ -167,8 +168,12 @@ export class TargetPool {
             tasks.forEach((task) => void existing.add(task.id));
 
             const changed: Set<string> = new Set();
+            const oldStates: Map<string, unknown> = new Map();
             plan.created.forEach((entry) => void changed.add(entry));
-            plan.updated.forEach((entry) => void changed.add(entry.id));
+            plan.updated.forEach((entry) => {
+                changed.add(entry.id);
+                oldStates.set(entry.id, entry.oldState);
+            });
             plan.deleted.forEach((entry) => {
                 // If task does not exist locally, create one with dummy data
                 // Remote has the old real state available for cleanup
@@ -184,7 +189,12 @@ export class TargetPool {
             });
             const changedTasks = tasks.filter((task) => changed.has(task.id));
 
-            return runner.execute(conn, changedTasks, this.#conns[0] === conn);
+            return runner.execute(
+                conn,
+                changedTasks,
+                oldStates,
+                this.#conns[0] === conn,
+            );
         });
 
         const rollToNext = (prev: Host, id: string) => {

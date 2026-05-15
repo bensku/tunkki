@@ -3,12 +3,12 @@ import { registerHandler } from '../local/task';
 
 export interface Step {
     location: 'remote' | 'local';
-    handler: (state: unknown) => Promise<unknown>;
+    handler: (state: unknown, oldState?: unknown) => Promise<unknown>;
 }
 
-export function step<T>(
+export function step<T, O = unknown>(
     location: Step['location'],
-    handler: (state: T) => Promise<unknown>,
+    handler: (state: T, oldState?: T) => Promise<O>,
 ): Step {
     return {
         location,
