@@ -181,12 +181,12 @@ export function vmHost(vm: TestVm): Host {
 }
 
 /**
- * Reset the global builder.tasks array. Bun's test runner shares module state
- * across tests in the same file; without this, tasks defined in test A would
- * leak into test B.
+ * Reset all builder state (sources + loaded tasks). Bun's test runner shares
+ * module state across tests in the same file; without this, sources or tasks
+ * defined in test A would leak into test B.
  */
 export function clearTasks(): void {
-    builder.tasks.length = 0;
+    builder.clearAll();
 }
 
 export interface ApplyOutcome {
@@ -198,19 +198,21 @@ export interface ApplyOutcome {
  * Run one full plan→execute→close cycle. The caller's `define` callback
  * registers tasks via the global builder (`podman.container(...)`,
  * `systemd.service(...)`, etc.). The task list is cleared before and after so
- * tests can't interfere with each other.
+ * tests can't interfere with each other. Pass mode='destroy' to exercise the
+ * destroy path while the same tasks are still defined.
  */
 export async function applyOnce(
     stack: string,
     hosts: Host[],
     define: () => void,
+    mode: 'apply' | 'destroy' | 'reapply' = 'apply',
 ): Promise<ApplyOutcome> {
     clearTasks();
     try {
         define();
         const pool = await connect(hosts);
         try {
-            const plans = await pool.plan(stack);
+            const plans = await pool.plan(stack, mode);
             const results = await pool.execute(plans);
             return { plans, results };
         } finally {
@@ -236,7 +238,7 @@ export async function destroyStack(
     clearTasks();
     const pool = await connect(hosts);
     try {
-        const plans = await pool.plan(stack, true);
+        const plans = await pool.plan(stack, 'destroy');
         return await pool.execute(plans);
     } finally {
         await pool.close();

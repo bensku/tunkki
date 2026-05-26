@@ -26,6 +26,7 @@ currently has on disk. Does not change anything.
 Flags:
       --target <key=val>   Filter hosts by tag (repeatable, OR semantics)
       --stack <name>       Override the stack name passed to deploy()
+      --reapply            Plan every task as changed, even if state matches
 `,
     apply: `Usage: <script> apply [flags]
 
@@ -34,6 +35,7 @@ Plan the changes, prompt for confirmation, and execute on each host.
 Flags:
       --target <key=val>   Filter hosts by tag (repeatable)
       --stack <name>       Override the stack name passed to deploy()
+      --reapply            Re-run every task, even if state matches
   -y, --yes                Skip the confirmation prompt
 `,
     destroy: `Usage: <script> destroy [flags]

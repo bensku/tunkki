@@ -34,8 +34,10 @@ export function printPlan(
     plans: Plan[],
     tasksByHost: Map<string, Task[]>,
     opts: OutputOptions,
+    hiddenIds?: Set<string>,
 ): void {
     const c = makeColor(opts.color);
+    const isHidden = (id: string) => hiddenIds?.has(id) ?? false;
     let totalAdd = 0;
     let totalChange = 0;
     let totalDestroy = 0;
@@ -49,11 +51,11 @@ export function printPlan(
         const labelFor = (task: Task | undefined): string => {
             if (!task) return '';
             const parts = [c.dim(`(${task.type})`)];
-            if (task.rolling) parts.push(c.cyan('rolling'));
             return parts.join(' ');
         };
 
         for (const id of [...plan.created].sort()) {
+            if (isHidden(id)) continue;
             const task = taskById.get(id);
             entries.push({
                 id,
@@ -69,6 +71,7 @@ export function printPlan(
         for (const upd of [...plan.updated].sort((a, b) =>
             a.id.localeCompare(b.id),
         )) {
+            if (isHidden(upd.id)) continue;
             const task = taskById.get(upd.id);
             const newState = task?.state;
             entries.push({
@@ -82,6 +85,7 @@ export function printPlan(
         for (const del of [...plan.deleted].sort((a, b) =>
             a.id.localeCompare(b.id),
         )) {
+            if (isHidden(del.id)) continue;
             entries.push({
                 id: del.id,
                 line: `  ${c.red('-')} ${del.id}`,
@@ -92,11 +96,10 @@ export function printPlan(
 
         if (opts.showUnchanged) {
             for (const id of [...plan.unchanged].sort()) {
-                const task = taskById.get(id);
-                const rolling = task?.rolling ? ` ${c.cyan('rolling')}` : '';
+                if (isHidden(id)) continue;
                 entries.push({
                     id,
-                    line: `${c.dim(`  = ${id}`)}${rolling}`,
+                    line: `${c.dim(`  = ${id}`)}`,
                 });
             }
         }
@@ -124,25 +127,28 @@ export function printPlan(
 
 export function liveProgress(event: Event, opts: OutputOptions): void {
     if (opts.quiet || opts.json) return;
-    // hostCompleted is an internal signal for rolling-task rollover; the
-    // user-facing progress line is the matching `completed` event.
-    if (event.type !== 'completed') return;
     const c = makeColor(opts.color);
     let icon: string;
-    switch (event.status) {
-        case 'done':
-            icon = c.green('✓');
-            break;
-        case 'error':
-            icon = c.red('✗');
-            break;
-        case 'skipped':
-            icon = c.dim('·');
-            break;
+    if (event.type === 'started') {
+        icon = c.dim('→');
+    } else {
+        switch (event.status) {
+            case 'done':
+                icon = c.green('✓');
+                break;
+            case 'error':
+                icon = c.red('✗');
+                break;
+            case 'skipped':
+                icon = c.dim('·');
+                break;
+            default:
+                return;
+        }
     }
     const tag = c.dim(`[${event.host.id}]`);
     let line = `${tag} ${icon} ${event.taskId}`;
-    if (event.status === 'error' && event.error) {
+    if (event.type === 'completed' && event.status === 'error' && event.error) {
         line += ` ${c.red(event.error)}`;
     }
     out(line);

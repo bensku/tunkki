@@ -66,9 +66,10 @@ interface Task extends BaseEvent {
     state: unknown;
 
     /**
-     * If this task must be executed after another task, ids of those tasks.
+     * If set to true, assume changed even if state did not actually change.
+     * This may be useful if host's reality diverges from state file.
      */
-    dependsOn?: string[];
+    reapply?: boolean;
 }
 
 /**
@@ -181,7 +182,7 @@ export type Event =
     | Run
     | Done
     | Reset;
-export type StepStatus = 'done' | 'error' | 'skipped';
+export type StepStatus = 'started' | 'done' | 'error' | 'skipped';
 
 export async function* readEvents(
     stream: ReadableStream<Uint8Array>,

@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { podman, systemd } from '../..';
+import { on, podman, systemd } from '../..';
 import {
     applyOnce,
     destroyStack,
@@ -24,6 +24,7 @@ const stack = uniqueStack('e2e-recreate');
 const name = `tunkki-test-${stack}`;
 const servicePath = `/etc/systemd/system/${name}.service`;
 const containerPath = `/etc/containers/systemd/${name}.container`;
+const id = `${VM}.foo`;
 
 afterAll(async () => {
     if (!ready) return;
@@ -39,14 +40,16 @@ t(
     async () => {
         // ---- Phase 1: task `foo` is a systemd.service ----
         const r1 = await applyOnce(stack, [vmHost(VM)], () => {
-            systemd.service('foo', {
-                name,
-                type: 'simple',
-                exec: ['/usr/bin/sleep', '86400'],
+            on('*', () => {
+                systemd.service('foo', {
+                    name,
+                    type: 'simple',
+                    exec: ['/usr/bin/sleep', '86400'],
+                });
             });
         });
         expect(r1.results[0]!.errored).toEqual([]);
-        expect(r1.results[0]!.completed).toContain('foo');
+        expect(r1.results[0]!.completed).toContain(id);
         expect(await vmFileExists(VM, servicePath)).toBe(true);
         expect(await vmFileExists(VM, containerPath)).toBe(false);
         await waitForServiceState(VM, `${name}.service`, 'active');
@@ -55,13 +58,15 @@ t(
         // The remote runner detects the handler change and runs the OLD handler's
         // cleanup before applying with the new handler (see remote/runner.ts:291).
         const r2 = await applyOnce(stack, [vmHost(VM)], () => {
-            podman.container('foo', {
-                name,
-                image: 'docker.io/library/nginx:latest', // pre-cached on the VM
+            on('*', () => {
+                podman.container('foo', {
+                    name,
+                    image: 'docker.io/library/nginx:latest', // pre-cached on the VM
+                });
             });
         });
         expect(r2.results[0]!.errored).toEqual([]);
-        expect(r2.results[0]!.completed).toContain('foo');
+        expect(r2.results[0]!.completed).toContain(id);
 
         // Old systemd .service unit file is gone — cleanup ran.
         expect(await vmFileExists(VM, servicePath)).toBe(false);

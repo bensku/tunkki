@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { files } from '../..';
+import { files, on } from '../..';
 import {
     applyOnce,
     destroyStack,
@@ -32,6 +32,8 @@ const NESTED_PATH = `/tmp/tunkki-${stack}-nested/sub/dir/created.txt`;
 const BINARY_PATH = `/tmp/tunkki-${stack}-binary.bin`;
 const OWNED_PATH = `/tmp/tunkki-${stack}-owned.txt`;
 
+const qid = (id: string) => `${VM}.${id}`;
+
 // Single local fixture path that gets rewritten in place across phases — lets
 // us verify checksum-based detection isolates from localPath string comparison.
 const LOCAL_SRC = `/tmp/tunkki-test-src-${stack}.txt`;
@@ -58,17 +60,19 @@ t(
         // CREATE
         // ----------------------------------------------------------------------
         const create = await applyOnce(stack, [vmHost(VM)], () => {
-            files.put('lc', {
-                localPath: LOCAL_SRC,
-                remotePath: LIFECYCLE_PATH,
+            on('*', () => {
+                files.put('lc', {
+                    localPath: LOCAL_SRC,
+                    remotePath: LIFECYCLE_PATH,
+                });
             });
         });
         expect(create.plans).toHaveLength(1);
-        expect(create.plans[0]!.created).toContain('lc');
+        expect(create.plans[0]!.created).toContain(qid('lc'));
         expect(create.plans[0]!.unchanged).toEqual([]);
         expect(create.plans[0]!.updated).toEqual([]);
         expect(create.plans[0]!.deleted).toEqual([]);
-        expect(create.results[0]!.completed).toContain('lc');
+        expect(create.results[0]!.completed).toContain(qid('lc'));
         expect(create.results[0]!.errored).toEqual([]);
 
         expect(await vmFileExists(VM, LIFECYCLE_PATH)).toBe(true);
@@ -78,12 +82,14 @@ t(
         // UNCHANGED — same input, same local bytes, no diff
         // ----------------------------------------------------------------------
         const unchanged = await applyOnce(stack, [vmHost(VM)], () => {
-            files.put('lc', {
-                localPath: LOCAL_SRC,
-                remotePath: LIFECYCLE_PATH,
+            on('*', () => {
+                files.put('lc', {
+                    localPath: LOCAL_SRC,
+                    remotePath: LIFECYCLE_PATH,
+                });
             });
         });
-        expect(unchanged.plans[0]!.unchanged).toContain('lc');
+        expect(unchanged.plans[0]!.unchanged).toContain(qid('lc'));
         expect(unchanged.plans[0]!.created).toEqual([]);
         expect(unchanged.plans[0]!.updated).toEqual([]);
         expect(unchanged.plans[0]!.deleted).toEqual([]);
@@ -98,15 +104,17 @@ t(
         await Bun.write(LOCAL_SRC, 'hello v2 changed\n');
 
         const updateContent = await applyOnce(stack, [vmHost(VM)], () => {
-            files.put('lc', {
-                localPath: LOCAL_SRC,
-                remotePath: LIFECYCLE_PATH,
+            on('*', () => {
+                files.put('lc', {
+                    localPath: LOCAL_SRC,
+                    remotePath: LIFECYCLE_PATH,
+                });
             });
         });
         expect(updateContent.plans[0]!.updated.map((u) => u.id)).toContain(
-            'lc',
+            qid('lc'),
         );
-        expect(updateContent.results[0]!.completed).toContain('lc');
+        expect(updateContent.results[0]!.completed).toContain(qid('lc'));
         expect(updateContent.results[0]!.errored).toEqual([]);
         expect(await vmRead(VM, LIFECYCLE_PATH)).toBe('hello v2 changed\n');
 
@@ -115,13 +123,17 @@ t(
         // deleteOld branch in task/files/put.ts.
         // ----------------------------------------------------------------------
         const updatePath = await applyOnce(stack, [vmHost(VM)], () => {
-            files.put('lc', {
-                localPath: LOCAL_SRC,
-                remotePath: LIFECYCLE_PATH_MOVED,
+            on('*', () => {
+                files.put('lc', {
+                    localPath: LOCAL_SRC,
+                    remotePath: LIFECYCLE_PATH_MOVED,
+                });
             });
         });
-        expect(updatePath.plans[0]!.updated.map((u) => u.id)).toContain('lc');
-        expect(updatePath.results[0]!.completed).toContain('lc');
+        expect(updatePath.plans[0]!.updated.map((u) => u.id)).toContain(
+            qid('lc'),
+        );
+        expect(updatePath.results[0]!.completed).toContain(qid('lc'));
         expect(updatePath.results[0]!.errored).toEqual([]);
 
         expect(await vmFileExists(VM, LIFECYCLE_PATH)).toBe(false);
@@ -136,8 +148,8 @@ t(
         const del = await applyOnce(stack, [vmHost(VM)], () => {
             // intentionally empty
         });
-        expect(del.plans[0]!.deleted.map((d) => d.id)).toContain('lc');
-        expect(del.results[0]!.completed).toContain('lc');
+        expect(del.plans[0]!.deleted.map((d) => d.id)).toContain(qid('lc'));
+        expect(del.results[0]!.completed).toContain(qid('lc'));
         expect(del.results[0]!.errored).toEqual([]);
         expect(await vmFileExists(VM, LIFECYCLE_PATH_MOVED)).toBe(false);
     },
@@ -149,10 +161,15 @@ t(
     async () => {
         const body = 'literal contents here\n';
         const r = await applyOnce(stack, [vmHost(VM)], () => {
-            files.put('content', { content: body, remotePath: CONTENT_PATH });
+            on('*', () => {
+                files.put('content', {
+                    content: body,
+                    remotePath: CONTENT_PATH,
+                });
+            });
         });
-        expect(r.plans[0]!.created).toContain('content');
-        expect(r.results[0]!.completed).toContain('content');
+        expect(r.plans[0]!.created).toContain(qid('content'));
+        expect(r.results[0]!.completed).toContain(qid('content'));
         expect(r.results[0]!.errored).toEqual([]);
         expect(await vmRead(VM, CONTENT_PATH)).toBe(body);
     },
@@ -164,13 +181,15 @@ t(
     async () => {
         const body = '#!/bin/sh\necho hi\n';
         const r = await applyOnce(stack, [vmHost(VM)], () => {
-            files.put('mode', {
-                content: body,
-                remotePath: MODE_PATH,
-                mode: 0o755,
+            on('*', () => {
+                files.put('mode', {
+                    content: body,
+                    remotePath: MODE_PATH,
+                    mode: 0o755,
+                });
             });
         });
-        expect(r.results[0]!.completed).toContain('mode');
+        expect(r.results[0]!.completed).toContain(qid('mode'));
         expect(r.results[0]!.errored).toEqual([]);
 
         const stat = await vmExec(VM, `stat -c %a ${MODE_PATH}`);
@@ -185,12 +204,14 @@ t(
     'creates missing parent directories',
     async () => {
         const r = await applyOnce(stack, [vmHost(VM)], () => {
-            files.put('nested', {
-                content: 'deep',
-                remotePath: NESTED_PATH,
+            on('*', () => {
+                files.put('nested', {
+                    content: 'deep',
+                    remotePath: NESTED_PATH,
+                });
             });
         });
-        expect(r.results[0]!.completed).toContain('nested');
+        expect(r.results[0]!.completed).toContain(qid('nested'));
         expect(r.results[0]!.errored).toEqual([]);
         expect(await vmFileExists(VM, NESTED_PATH)).toBe(true);
         expect(await vmRead(VM, NESTED_PATH)).toBe('deep');
@@ -203,12 +224,14 @@ t(
     async () => {
         const bytes = new Uint8Array([0x00, 0x01, 0xff, 0xfe, 0x7f, 0x80]);
         const r = await applyOnce(stack, [vmHost(VM)], () => {
-            files.put('binary', {
-                content: bytes,
-                remotePath: BINARY_PATH,
+            on('*', () => {
+                files.put('binary', {
+                    content: bytes,
+                    remotePath: BINARY_PATH,
+                });
             });
         });
-        expect(r.results[0]!.completed).toContain('binary');
+        expect(r.results[0]!.completed).toContain(qid('binary'));
         expect(r.results[0]!.errored).toEqual([]);
 
         const size = await vmExec(VM, `wc -c < ${BINARY_PATH}`);
@@ -228,14 +251,16 @@ t(
     'sets user and group ownership',
     async () => {
         const r = await applyOnce(stack, [vmHost(VM)], () => {
-            files.put('owned', {
-                content: 'owned\n',
-                remotePath: OWNED_PATH,
-                user: 'nobody',
-                group: 'nobody',
+            on('*', () => {
+                files.put('owned', {
+                    content: 'owned\n',
+                    remotePath: OWNED_PATH,
+                    user: 'nobody',
+                    group: 'nobody',
+                });
             });
         });
-        expect(r.results[0]!.completed).toContain('owned');
+        expect(r.results[0]!.completed).toContain(qid('owned'));
         expect(r.results[0]!.errored).toEqual([]);
 
         const owner = await vmExec(VM, `stat -c '%U %G' ${OWNED_PATH}`);

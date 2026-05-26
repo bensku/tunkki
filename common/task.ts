@@ -1,4 +1,4 @@
-import type { Step } from '../task';
+import type { Step } from '@bensku/tunkki/task';
 
 export type TagSet = Record<string, string>;
 

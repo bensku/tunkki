@@ -3,7 +3,7 @@ import { systemd } from '@bensku/tunkki/task/util';
 import { $ } from 'bun';
 
 /** Values accepted by `Driver=`. */
-export type NetworkDriver = 'bridge' | 'macvlan' | 'ipvlan';
+export type NetworkDriver = 'bridge' | 'macvlan' | 'ipvlan' | string;
 
 /** Values accepted by `IPAMDriver=`. */
 export type NetworkIPAMDriver = 'host-local' | 'dhcp' | 'none';
@@ -148,5 +148,5 @@ export const apply = step('remote', async (state: State) => {
 export const cleanup = async (state: State) => {
     await Bun.file(`/etc/containers/systemd/${state.name}.network`).delete();
     await $`systemctl daemon-reload`;
-    await $`systemctl stop ${state.name}-pod`;
+    await $`systemctl stop ${state.name}-network`;
 };

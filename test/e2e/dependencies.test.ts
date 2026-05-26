@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { systemd } from '../..';
+import { on, systemd } from '../..';
 import {
     applyOnce,
     destroyStack,
@@ -56,27 +56,29 @@ t(
         await vmExec(VM, `rm -f ${orderLog}`);
 
         const r = await applyOnce(stackOk, [vmHost(VM)], () => {
-            const b = systemd.service('b', {
-                name: unitOkB,
-                type: 'oneshot',
-                remainAfterExit: true,
-                exec: ['/bin/sh', '-c', `printf B >> ${orderLog}`],
-            });
-            systemd.service(
-                'a',
-                {
-                    name: unitOkA,
+            on('*', () => {
+                const b = systemd.service('b', {
+                    name: unitOkB,
                     type: 'oneshot',
                     remainAfterExit: true,
-                    exec: ['/bin/sh', '-c', `printf A >> ${orderLog}`],
-                },
-                { dependsOn: [b.id] },
-            );
+                    exec: ['/bin/sh', '-c', `printf B >> ${orderLog}`],
+                });
+                systemd.service(
+                    'a',
+                    {
+                        name: unitOkA,
+                        type: 'oneshot',
+                        remainAfterExit: true,
+                        exec: ['/bin/sh', '-c', `printf A >> ${orderLog}`],
+                    },
+                    { after: [b.id] },
+                );
+            });
         });
 
         expect(r.results[0]!.errored).toEqual([]);
         expect(r.results[0]!.completed).toEqual(
-            expect.arrayContaining(['a', 'b']),
+            expect.arrayContaining([`${VM}.a`, `${VM}.b`]),
         );
 
         const log = await vmRead(VM, orderLog);
@@ -89,27 +91,29 @@ t(
     'failed dependency causes the dependent to be skipped (its handler never runs)',
     async () => {
         const r = await applyOnce(stackFail, [vmHost(VM)], () => {
-            const a = systemd.service('a', {
-                name: unitFailA,
-                type: 'oneshot',
-                // /bin/false fails -> systemctl restart fails -> apply throws ->
-                // the task is marked errored.
-                exec: '/bin/false',
-            });
-            systemd.service(
-                'b',
-                {
-                    name: unitFailB,
+            on('*', () => {
+                const a = systemd.service('a', {
+                    name: unitFailA,
                     type: 'oneshot',
-                    remainAfterExit: true,
-                    exec: ['/bin/sh', '-c', `date +%s%N > ${markerFailB}`],
-                },
-                { dependsOn: [a.id] },
-            );
+                    // /bin/false fails -> systemctl restart fails -> apply throws ->
+                    // the task is marked errored.
+                    exec: '/bin/false',
+                });
+                systemd.service(
+                    'b',
+                    {
+                        name: unitFailB,
+                        type: 'oneshot',
+                        remainAfterExit: true,
+                        exec: ['/bin/sh', '-c', `date +%s%N > ${markerFailB}`],
+                    },
+                    { after: [a.id] },
+                );
+            });
         });
 
-        expect(r.results[0]!.errored.map((e) => e.taskId)).toContain('a');
-        expect(r.results[0]!.skipped).toContain('b');
+        expect(r.results[0]!.errored.map((e) => e.taskId)).toContain(`${VM}.a`);
+        expect(r.results[0]!.skipped).toContain(`${VM}.b`);
         // B's ExecStart never ran -> no marker.
         expect(await vmFileExists(VM, markerFailB)).toBe(false);
     },

@@ -1,7 +1,7 @@
-import type { Host } from '..';
+import type { Host } from '@bensku/tunkki';
+import type { Step } from '@bensku/tunkki/task';
 import type { StepStatus } from '../common/event';
 import { LOG_LEVEL, log } from '../common/log';
-import type { Step } from '../task';
 import type { Connection } from './connection';
 import { loadHandlerCode, loadSteps, type Task } from './task';
 
@@ -18,6 +18,7 @@ export async function plan(
     stack: string,
     conn: Connection,
     tasks: Task[],
+    reapply: boolean,
 ): Promise<Plan> {
     // Configure the remote
     await conn.send({
@@ -35,7 +36,7 @@ export async function plan(
     });
 
     // Collect status events and wait for ready in background
-    const plan = (async () => {
+    const planPromise = (async () => {
         const plan: Plan = {
             host: conn.host,
             unchanged: [],
@@ -84,66 +85,107 @@ export async function plan(
             id: task.id,
             state: task.state,
             taskType: task.type,
-            dependsOn: task.dependsOn,
+            reapply: reapply ? true : undefined,
         });
     }
     await conn.send({
         type: 'tasksSent',
     });
 
+    // Patch onChangeds to plan. Iterate to a fixed point so transitive
+    // promotion works: if B has onChanged=[A] and is promoted because A
+    // moved, then C with onChanged=[B] must also be promoted in a subsequent
+    // pass (B is no longer "unchanged" from C's perspective).
+    const plan = await planPromise;
+    const unchanged = new Set(plan.unchanged);
+    let progress = true;
+    while (progress) {
+        progress = false;
+        for (const task of tasks) {
+            if (!unchanged.has(task.id)) continue;
+            for (const dep of task.onChanged ?? []) {
+                if (!unchanged.has(dep)) {
+                    // onChanged has changed, move this task to changed
+                    log.debug(
+                        'change detected in onChanged',
+                        'dep',
+                        dep,
+                        'task',
+                        task.id,
+                    );
+                    unchanged.delete(task.id);
+                    const idx = plan.unchanged.indexOf(task.id);
+                    plan.unchanged.splice(idx, 1);
+                    plan.updated.push({
+                        id: task.id,
+                        oldState: task.state, // State did not actually change, we'll just pretend it did
+                    });
+                    // ... and let remote know!
+                    await conn.send({
+                        type: 'task',
+                        id: task.id,
+                        state: task.state, // TODO avoid resending state
+                        taskType: task.type,
+                        reapply: true,
+                    });
+                    progress = true;
+                    break;
+                }
+            }
+        }
+    }
+
     return plan;
 }
 
 export interface Event {
     host: Host;
-    type: 'completed' | 'hostCompleted';
+    type: 'started' | 'completed';
     taskId: string;
     status: StepStatus;
     error?: string;
 }
 
-export async function* execute(
+export async function newExecutor(
     conn: Connection,
-    tasks: Task[],
+    changed: Task[],
     oldStates: Map<string, unknown>,
-    rollFirst: boolean,
-): AsyncGenerator<Event> {
-    if (tasks.length === 0) {
-        return { completed: [], skipped: [], errored: [] };
-    }
+): Promise<[AsyncGenerator<Event>, (task: Task) => void, () => void]> {
+    // Load handlers locally, not all steps run on remote'
+    // TODO maybe load this once outside of runner?
+    const steps = await loadSteps(changed);
 
-    // Load handlers locally, not all steps run on remote
-    const steps = await loadSteps(tasks);
+    // Shutdown signal: the caller flips this when the scheduler is done so
+    // listenEvents can stop awaiting further remote responses. Without it,
+    // any task the scheduler resolved locally (e.g. via skip-cascade) leaves
+    // listenEvents hanging on `conn.listen()` forever.
+    let resolveShutdown!: () => void;
+    const shutdown = new Promise<void>((r) => (resolveShutdown = r));
+    const SHUTDOWN_SENTINEL = Symbol('shutdown');
 
-    const taskMap: Map<string, Task> = new Map();
-    const currentStep: Map<string, number> = new Map();
-    let completedCount = 0;
+    async function* listenEvents(): AsyncGenerator<Event> {
+        if (changed.length === 0) return;
 
-    // Start first step of each task
-    for (const task of tasks) {
-        taskMap.set(task.id, task);
-        if (!task.rolling || rollFirst) {
-            await runStep(
-                conn,
-                steps,
-                task,
-                0,
-                task.state,
-                oldStates.get(task.id),
-            );
-        }
-    }
+        const taskMap = new Map(changed.map((t) => [t.id, t]));
+        const currentStep: Map<string, number> = new Map();
 
-    // Listen to events from remote.
-    // Run further steps and mark tasks as completed as needed.
-    for await (const event of conn.listen()) {
-        switch (event.type) {
-            case 'done':
-                {
+        const iter = conn.listen()[Symbol.asyncIterator]();
+        while (true) {
+            const next = await Promise.race([
+                iter.next(),
+                shutdown.then(() => SHUTDOWN_SENTINEL),
+            ]);
+            if (typeof next === 'symbol') {
+                log.debug('executor shutdown', 'host', conn.host.id);
+                return;
+            }
+            if (next.done) return;
+            const event = next.value;
+            switch (event.type) {
+                case 'done': {
                     const task = taskMap.get(event.id)!;
                     switch (event.status) {
                         case 'error':
-                            completedCount++;
                             yield {
                                 host: conn.host,
                                 type: 'completed',
@@ -151,99 +193,73 @@ export async function* execute(
                                 status: 'error',
                                 error: event.result as string,
                             };
-                            if (task.rolling) {
-                                yield {
-                                    host: conn.host,
-                                    type: 'hostCompleted',
-                                    taskId: event.id,
-                                    status: 'error',
-                                };
-                            }
                             break;
                         case 'skipped':
-                            // Typically, tasks are skipped due to errored (transitive) dependencies
-                            completedCount++;
                             yield {
                                 host: conn.host,
                                 type: 'completed',
                                 taskId: event.id,
                                 status: 'skipped',
                             };
-                            if (task.rolling) {
-                                // This kind of skipped task should be treated as an error that stops
-                                // the rolling deploy!
-                                yield {
-                                    host: conn.host,
-                                    type: 'hostCompleted',
-                                    taskId: event.id,
-                                    status: 'error',
-                                };
-                            }
                             break;
                         case 'done': {
-                            const next = (currentStep.get(event.id) ?? 0) + 1;
-                            if (next === steps[task.type]?.length) {
-                                completedCount++;
+                            const nextStep =
+                                (currentStep.get(event.id) ?? 0) + 1;
+                            if (nextStep === steps[task.type]?.length) {
                                 yield {
                                     host: conn.host,
                                     type: 'completed',
                                     taskId: event.id,
                                     status: 'done',
                                 };
-                                if (task.rolling) {
-                                    yield {
-                                        host: conn.host,
-                                        type: 'hostCompleted',
-                                        taskId: event.id,
-                                        status: 'done',
-                                    };
-                                }
                             } else {
-                                currentStep.set(event.id, next);
+                                currentStep.set(event.id, nextStep);
                                 await runStep(
                                     conn,
                                     steps,
                                     task,
-                                    next,
+                                    nextStep,
                                     event.result,
                                 );
                             }
                             break;
                         }
                     }
+                    break;
                 }
-                break;
-            case 'run': {
-                // Local self-sends run events to support rolling tasks
-                // As rolling tasks are completed, next hosts can begin executing them
-                const task = taskMap.get(event.id);
-                // Rolling tasks don't necessarily apply on all hosts
-                if (task) {
-                    // We'll report to caller once the task is done
-                    await runStep(
-                        conn,
-                        steps,
-                        task,
-                        0,
-                        task.state,
-                        oldStates.get(task.id),
-                    );
-                } else {
-                    // Report to caller immediately!
-                    yield {
-                        host: conn.host,
-                        type: 'hostCompleted',
-                        taskId: event.id,
-                        status: 'skipped',
-                    };
+                case 'run': {
+                    // Local self-sends run events to support rolling tasks
+                    // As rolling tasks are completed, next hosts can begin executing them
+                    const task = taskMap.get(event.id);
+                    // Rolling tasks don't necessarily apply on all hosts
+                    if (task) {
+                        await runStep(
+                            conn,
+                            steps,
+                            task,
+                            0,
+                            task.state,
+                            oldStates.get(task.id),
+                        );
+                    }
+                    break;
                 }
-                break;
             }
         }
-        if (completedCount === tasks.length) {
-            break;
-        }
     }
+
+    const submitTask = (task: Task) => {
+        return runStep(
+            conn,
+            steps,
+            task,
+            0,
+            task.state,
+            oldStates.get(task.id),
+        );
+    };
+
+    return [listenEvents(), submitTask, resolveShutdown];
 }
 
 async function runStep(
@@ -256,7 +272,7 @@ async function runStep(
 ) {
     const taskSteps = steps[task.type];
     if (!taskSteps) {
-        throw new Error();
+        throw new Error(`internal error: task ${task.id} steps not loaded`);
     }
     const step = taskSteps.at(stepIdx);
     if (!step) {
@@ -272,8 +288,15 @@ async function runStep(
                 // subsequent steps receive their predecessor's result as state.
                 result =
                     stepIdx === 0
-                        ? await step.handler(state, oldState)
-                        : await step.handler(state);
+                        ? await step.handler(
+                              state,
+                              { ...task.localData, host: conn.host },
+                              oldState,
+                          )
+                        : await step.handler(state, {
+                              ...task.localData,
+                              host: conn.host,
+                          });
             } catch (e) {
                 error = e;
             }

@@ -48,13 +48,24 @@ describe('binary protocol round-trip', () => {
         expect(await roundTrip(ev)).toEqual(ev);
     });
 
-    test('task with structured state and dependsOn', async () => {
+    test('task with structured state', async () => {
         const ev: Event = {
             type: 'task',
             id: 'web.frontend',
             taskType: 'systemd.service',
             state: { name: 'frontend', exec: ['/bin/echo', 'hi'], port: 80 },
-            dependsOn: ['db', 'cache'],
+        };
+        expect(await roundTrip(ev)).toEqual(ev);
+    });
+
+    test('task with reapply=true survives the round-trip', async () => {
+        // reapply asks the remote to assume changed even when state matches.
+        const ev: Event = {
+            type: 'task',
+            id: 'web.frontend',
+            taskType: 'systemd.service',
+            state: { name: 'frontend' },
+            reapply: true,
         };
         expect(await roundTrip(ev)).toEqual(ev);
     });

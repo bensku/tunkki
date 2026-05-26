@@ -129,26 +129,13 @@ export class Runner {
                 // Local has sent a task. Queue if we need to execute anything
                 this.#seenTasks.add(event.id); // at least this task was not deleted
 
-                // Register reverse dep edges so we can wake this task when its
-                // dependencies complete (regardless of arrival order).
-                if (event.dependsOn) {
-                    for (const depId of event.dependsOn) {
-                        let dependents = this.#dependents.get(depId);
-                        if (!dependents) {
-                            dependents = new Set();
-                            this.#dependents.set(depId, dependents);
-                        }
-                        dependents.add(event.id);
-                    }
-                }
-
                 const oldState = this.#state[event.id];
                 if (
+                    !event.reapply &&
                     oldState?.handler === event.taskType &&
                     Bun.deepEquals(oldState?.state, event.state)
                 ) {
-                    // No changes needed; instantly complete so dependents may proceed
-                    this.#markCompleted(event.id);
+                    // No changes needed
                     reply({
                         type: 'status',
                         id: event.id,
@@ -157,13 +144,22 @@ export class Runner {
                     });
                 } else {
                     // Some changes needed, track a task...
+                    const handler: TaskHandler =
+                        event.taskType === '$noop'
+                            ? {
+                                  // Special case: execute no handler at all, actually
+                                  apply: {
+                                      location: 'remote',
+                                      handler: async () => undefined,
+                                  },
+                              }
+                            : await import(
+                                  `${this.#handlerDir}/${event.taskType}.ts`
+                              );
                     this.#tasks.set(event.id, {
                         type: event.taskType,
-                        handler: await import(
-                            `${this.#handlerDir}/${event.taskType}.ts`
-                        ),
+                        handler,
                         state: event.state,
-                        dependsOn: event.dependsOn,
                         // If task type changed, we need to cleanup it before updating with new state
                         recreateWith:
                             oldState?.handler &&
@@ -193,9 +189,18 @@ export class Runner {
                         this.#tasks.set(id, {
                             // Old handler should still exist on our disk...
                             type: state.handler,
-                            handler: await import(
-                                `${this.#handlerDir}/${state.handler}.ts`
-                            ),
+                            handler:
+                                state.handler === '$noop'
+                                    ? {
+                                          // Special case: execute no handler at all, actually
+                                          apply: {
+                                              location: 'remote',
+                                              handler: async () => undefined,
+                                          },
+                                      }
+                                    : await import(
+                                          `${this.#handlerDir}/${state.handler}.ts`
+                                      ),
                             state: undefined, // undefined == state does not exist, please cleanup
                         });
                         reply({
@@ -215,59 +220,10 @@ export class Runner {
                 break;
             }
             case 'run': {
-                if (event.step === 0) {
-                    const task = this.#tasks.get(event.id);
-                    if (!task) {
-                        throw new Error(`missing task: ${event.id}`);
-                    }
-                    const deps = task.dependsOn ?? [];
-
-                    // If any of dependencies have failed, immediately skip this due to failure
-                    for (const dep of deps) {
-                        if (this.#failed.has(dep)) {
-                            reply({
-                                type: 'done',
-                                id: event.id,
-                                result: undefined,
-                                status: 'skipped',
-                            });
-                            this.#markFailed(event.id);
-                            log.info(
-                                'skipped task due to dependency error',
-                                'task',
-                                event.id,
-                                'dependency',
-                                dep,
-                            );
-                            return;
-                        }
-                    }
-
-                    // If any of dependencies are pending, queue this until they have completed
-                    for (const dep of deps) {
-                        if (!this.#completed.has(dep)) {
-                            this.#pending.set(event.id, event);
-                            log.debug(
-                                'dependencies not ready, marked as pending',
-                                'task',
-                                event.id,
-                            );
-                            return;
-                        }
-                    }
-                } // else: task has already started execution, so its dependencies must've been completed
                 this.#dispatchRun(event);
                 break;
             }
-            case 'done': {
-                // In rare cases where local side executes last step, it'll send US done event with results
-                if (event.status === 'error') {
-                    this.#markFailed(event.id);
-                } else {
-                    this.#markCompleted(event.id);
-                }
-                break;
-            }
+            // FIXME on done, handle local side telling us about task completion (need to update state etc.)
             case 'reset':
                 break; // TODO
         }
@@ -307,10 +263,13 @@ export class Runner {
                         log.info('cleanup due to delete', 'task', event.id);
                     } else {
                         // Just apply create/update for first step
-                        result = await steps[0]!.handler(
-                            task.state,
-                            this.#state[event.id]?.state,
-                        );
+                        if (task.type !== '$noop') {
+                            result = await steps[0]!.handler(
+                                task.state,
+                                undefined,
+                                this.#state[event.id]?.state,
+                            );
+                        }
                         log.info('executed step', 'task', event.id, 'step', 0);
                     }
                 } else {
@@ -359,37 +318,9 @@ export class Runner {
                     state: task.state,
                 };
                 await this.#saveState();
-                this.#markCompleted(event.id);
             }
         } finally {
             release();
-        }
-    }
-
-    #markCompleted(id: string) {
-        this.#completed.add(id);
-
-        const dependents = this.#dependents.get(id);
-        if (!dependents) {
-            return;
-        }
-
-        // If we have dependents, wake them up if their other dependencies are also completed
-        outer: for (const id of dependents) {
-            const pendingEvent = this.#pending.get(id);
-            if (pendingEvent) {
-                const task = this.#tasks.get(id);
-                if (!task) {
-                    throw new Error(`missing task: ${id}`);
-                }
-                for (const dep of task.dependsOn ?? []) {
-                    if (!this.#completed.has(dep)) {
-                        continue outer; // Other dependencies not yet completed
-                    }
-                }
-                // All dependencies completed, run the task
-                this.#dispatchRun(pendingEvent);
-            }
         }
     }
 
@@ -418,7 +349,7 @@ interface Task {
     type: string;
     handler: TaskHandler;
     state: unknown;
-    dependsOn?: string[];
+    onchanged?: string[];
     recreateWith?: TaskHandler;
 }
 

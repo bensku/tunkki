@@ -47,7 +47,7 @@ export class Connection {
     }
 
     async send(event: Event) {
-        log.debug('local->remote', 'event', event);
+        log.debug('local->remote', 'host', this.host.id, 'event', event);
         await this.#in.write(writeEvent(event));
     }
 

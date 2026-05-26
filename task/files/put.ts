@@ -22,7 +22,7 @@ interface PutReq {
 }
 
 export const apply = [
-    step<State, PutReq>('local', async (state, oldState) => {
+    step<State, PutReq>('local', async (state, _, oldState) => {
         // If this executes, remote has noticed a difference in state, e.g. the checksum
         // Load data to memory if it isn't already there
         let data: Uint8Array;

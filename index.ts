@@ -1,13 +1,16 @@
+import { log } from './common/log';
 import type { TagSet } from './common/task';
 import * as builder from './local/builder';
 import { runCli } from './local/cli';
 import { Connection } from './local/connection';
 import * as runner from './local/runner';
-import { filterTasks, type Task } from './local/task';
+import { newTaskScheduler } from './local/scheduler';
+import type { Task } from './local/task';
 import type { Connector } from './protocol';
 
 export * as protocols from './protocol';
 export * as files from './task/files';
+export * as nebula from './task/nebula';
 export * as podman from './task/podman';
 export * as systemd from './task/systemd';
 
@@ -30,23 +33,63 @@ export async function group<T>(
 }
 
 /**
- * Constrains tasks to be only applied on select hosts.
- * @param targets Tags or host id that the tasks should be applied to.
- * If multiple tags are given, OR semantics are used. Globbing is supported
- * for tag values.
- * @param handler Callback that creates the tasks.
- * @returns Outputs of handler, if any.
+ * Adds a set of tasks for a future deployment.
+ * @param targets A set of tags that hosts must have for these tasks to be
+ * deployed on them.
+ * @param handler Handler that should add the tasks.
+ * @param rolling Whether or not this set of tasks should receive a rolling
+ * deployment. By default, the tasks are applied host-by-host. If set to
+ * false, all tasks are applied in parallel, improving performance.
  */
-export async function on<T>(
+export function on(
     targets: TagSet | string,
-    handler: () => Promise<T> | T,
-): Promise<T> {
-    builder.pushTargets(
-        typeof targets === 'string' ? { host: targets } : targets,
-    );
-    const outputs = await handler();
-    builder.popTargets();
-    return outputs;
+    handler: (host: Host) => Promise<void> | void,
+    rolling: boolean = true,
+): void {
+    const targetTags =
+        typeof targets === 'string' ? { host: targets } : targets;
+    builder.addSource(async (host, prev) => {
+        const hostTags = host.tags ?? {};
+        hostTags.host = host.id;
+        let shouldApply = false;
+        // If we have even one of requested tags, run handler for this host
+        // Handler code can do more complicated host selection logic if it wishes to
+        for (const [tag, value] of Object.entries(targetTags)) {
+            if (hostTags[tag] && new Bun.Glob(value).match(hostTags[tag])) {
+                shouldApply = true;
+                break;
+            }
+        }
+        log.debug('load source', 'host', host.id, 'apply', shouldApply);
+        if (shouldApply) {
+            try {
+                const startIdx = builder.enterHost(host.id);
+                await handler(host);
+
+                // Add task at end which depends on all tasks
+                const tasks = builder.tasks;
+                const end = builder.addTask(
+                    `${tasks.at(-1)?.id}-end`,
+                    '$noop',
+                    {},
+                    { onChanged: [] },
+                ); // FIXME better id source
+                for (let i = startIdx; i < tasks.length - 1; i++) {
+                    const task = tasks[i]!;
+                    end.after!.push(task.id);
+                    end.onChanged!.push(task.id);
+                    // If this is rolling, add dependency on previous end
+                    if (rolling && prev) {
+                        task.after.push(prev.id);
+                    }
+                }
+
+                return end;
+            } finally {
+                builder.exitHost();
+            }
+        }
+    });
 }
 
 export interface Host {
@@ -56,15 +99,6 @@ export interface Host {
 }
 
 export async function connect(hosts: Host[]): Promise<TargetPool> {
-    // Load tasks for each host
-    const tasks: Map<string, Task[]> = new Map();
-    for (const host of hosts) {
-        tasks.set(
-            host.id,
-            filterTasks(builder.tasks, { ...host.tags, host: host.id }),
-        );
-    }
-
     // Attempt to connect to hosts
     const attempts = await Promise.allSettled(
         hosts.map((host) => host.conn.connect()),
@@ -84,7 +118,9 @@ export async function connect(hosts: Host[]): Promise<TargetPool> {
     }
     // biome-ignore lint/style/noNonNullAssertion: there are no failures, indices in successes are same as indices in hosts
     const conns = successes.map((conn, i) => new Connection(conn, hosts[i]!));
-    return new TargetPool(conns, tasks);
+
+    await builder.loadTasks(hosts);
+    return new TargetPool(conns, builder.tasks);
 }
 
 export type Plan = runner.Plan;
@@ -122,14 +158,17 @@ async function* mergeAsync<T>(gens: AsyncGenerator<T>[]): AsyncGenerator<T> {
 export class TargetPool {
     #conns: Connection[];
     #stage = 0;
-    #hostTasks: Map<string, Task[]>;
+    #tasks: Task[];
 
-    constructor(conns: Connection[], hostTasks: Map<string, Task[]>) {
+    constructor(conns: Connection[], tasks: Task[]) {
         this.#conns = conns;
-        this.#hostTasks = hostTasks;
+        this.#tasks = tasks;
     }
 
-    async plan(stack: string, destroy?: boolean): Promise<Plan[]> {
+    async plan(
+        stack: string,
+        mode: 'apply' | 'destroy' | 'reapply' = 'apply',
+    ): Promise<Plan[]> {
         if (this.#stage > 0) {
             throw new Error('already planned');
         }
@@ -139,7 +178,12 @@ export class TargetPool {
                 runner.plan(
                     stack,
                     conn,
-                    destroy ? [] : (this.#hostTasks.get(conn.host.id) ?? []),
+                    mode === 'destroy'
+                        ? []
+                        : this.#tasks.filter(
+                              (task) => task.host === conn.host.id,
+                          ),
+                    mode === 'reapply',
                 ),
             ),
         );
@@ -157,60 +201,114 @@ export class TargetPool {
         }
         this.#stage = 2;
 
-        // Execute normal tasks in parallel
-        // First connection also starts rolling tasks
-        const generators = plans.map((plan) => {
+        // Build the executable task list. Any id reported by the remote as
+        // deleted is represented by a synthetic `$delete` pseudo-task — even
+        // if a user-defined task with the same id is in this.#tasks. The
+        // pseudo replaces the real entry so the runner takes the cleanup
+        // path; otherwise we'd queue the same id twice (causing duplicate
+        // `run` events and double cleanup, which is what `destroy` triggered
+        // when this.#tasks was still populated).
+        const deletedIds = new Set<string>();
+        for (const plan of plans) {
+            for (const entry of plan.deleted) deletedIds.add(entry.id);
+        }
+        const allTasks = this.#tasks.filter((t) => !deletedIds.has(t.id));
+        for (const plan of plans) {
+            for (const entry of plan.deleted) {
+                allTasks.push({
+                    id: entry.id,
+                    host: plan.host.id,
+                    type: '$delete',
+                    after: [],
+                    state: undefined,
+                    localData: {},
+                });
+            }
+        }
+
+        // Create executors that submit tasks to remotes on hosts
+        const generators: AsyncGenerator<runner.Event>[] = [];
+        const executors: Map<string, (task: Task) => void> = new Map();
+        const shutdowns: (() => void)[] = [];
+        for (const plan of plans) {
             const conn = this.#conns.find((conn) => conn.host === plan.host)!;
-            const tasks = this.#hostTasks.get(plan.host.id) ?? [];
 
-            // Figure out which tasks we should tell remote to execute
-            const existing: Set<string> = new Set();
-            tasks.forEach((task) => void existing.add(task.id));
-
-            const changed: Set<string> = new Set();
+            const unchanged = new Set(plan.unchanged);
+            // Use allTasks (not this.#tasks) so synthetic $delete tasks
+            // detected only on the remote are included in the executor's
+            // step map and reachable by exec().
+            const changed = allTasks.filter(
+                (task) => task.host === plan.host.id && !unchanged.has(task.id),
+            );
             const oldStates: Map<string, unknown> = new Map();
-            plan.created.forEach((entry) => void changed.add(entry));
             plan.updated.forEach((entry) => {
-                changed.add(entry.id);
                 oldStates.set(entry.id, entry.oldState);
             });
             plan.deleted.forEach((entry) => {
-                // If task does not exist locally, create one with dummy data
-                // Remote has the old real state available for cleanup
-                if (!existing.has(entry.id)) {
-                    tasks.push({
-                        id: entry.id,
-                        type: '$delete',
-                        applyOn: {},
-                        state: undefined,
-                    });
-                }
-                changed.add(entry.id);
+                oldStates.set(entry.id, entry.oldState);
             });
-            const changedTasks = tasks.filter((task) => changed.has(task.id));
 
-            return runner.execute(
+            const [listen, exec, shutdown] = await runner.newExecutor(
                 conn,
-                changedTasks,
+                changed,
                 oldStates,
-                this.#conns[0] === conn,
             );
-        });
+            generators.push(listen);
+            executors.set(plan.host.id, exec);
+            shutdowns.push(shutdown);
+        }
 
-        const rollToNext = (prev: Host, id: string) => {
-            // Start task on next connection!
-            const idx = this.#conns.findIndex((conn) => conn.host === prev);
-            const next = this.#conns[idx + 1];
-            if (next) {
-                next.sendToSelf({
-                    type: 'run',
-                    id,
-                    // Neither step or state are actually used by runner
-                    step: -1,
-                    state: undefined,
+        // Create scheduler, but do NOT start it yet. Same allTasks here so
+        // $delete tasks get scheduled.
+        const [scheduler, onCompleted] = newTaskScheduler(allTasks);
+
+        // Mark unchanged tasks as completed (skipped means "skipped due to dependency error" and cascades; don't use it here!)
+        for (const plan of plans) {
+            for (const taskId of plan.unchanged) {
+                onCompleted({
+                    host: plan.host,
+                    type: 'completed',
+                    taskId,
+                    status: 'done',
                 });
             }
-        };
+        }
+
+        // And now we can schedule rest of the tasks for execution!
+        const hosts = new Map(
+            this.#conns.map((conn) => [conn.host.id, conn.host]),
+        );
+        async function* run(): AsyncGenerator<runner.Event> {
+            try {
+                for await (const sched of scheduler()) {
+                    if (sched.status === 'skipped') {
+                        // Skipped locally (e.g. dependency failed) — the
+                        // task never reaches the remote, so emit its
+                        // completion event here.
+                        yield {
+                            host: hosts.get(sched.task.host)!,
+                            type: 'completed',
+                            status: 'skipped',
+                            taskId: sched.task.id,
+                        };
+                    } else {
+                        yield {
+                            host: hosts.get(sched.task.host)!,
+                            type: 'started',
+                            status: 'started',
+                            taskId: sched.task.id,
+                        };
+                        executors.get(sched.task.host)!(sched.task);
+                    }
+                }
+                log.debug('scheduler has finished');
+            } finally {
+                // Scheduler done — tell each per-host listener to stop
+                // awaiting further remote responses.
+                for (const shutdown of shutdowns) shutdown();
+            }
+        }
+        generators.push(run());
 
         // Collect per-host results and start rolling tasks as they complete in previous hosts
         const byHost = new Map<string, Result>(
@@ -228,6 +326,7 @@ export class TargetPool {
             callback?.(event);
             switch (event.type) {
                 case 'completed': {
+                    onCompleted(event);
                     const result = byHost.get(event.host.id);
                     if (!result) {
                         throw new Error(
@@ -248,12 +347,6 @@ export class TargetPool {
                             });
                             break;
                     }
-                    break;
-                }
-                case 'hostCompleted': {
-                    // Rolling task finished on one host, put it to next one
-                    // FIXME currently even if there is an error, what could go wrong?
-                    rollToNext(event.host, event.taskId);
                     break;
                 }
             }

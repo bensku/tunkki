@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { systemd } from '../..';
+import { on, systemd } from '../..';
 import {
     applyOnce,
     destroyStack,
@@ -27,6 +27,7 @@ const stack = uniqueStack('e2e-lc');
 const unit = `tunkki-test-${stack}`;
 const unitPath = `/etc/systemd/system/${unit}.service`;
 const statePath = `/opt/tunkki/${stack}/state/current.json`;
+const id = `${VM}.lc`;
 
 afterAll(async () => {
     if (!ready) return;
@@ -53,26 +54,30 @@ t(
         // CREATE
         // ----------------------------------------------------------------------
         const create = await applyOnce(stack, [vmHost(VM)], () => {
-            systemd.service('lc', {
-                name: unit,
-                type: 'simple',
-                exec: ['/usr/bin/sleep', '86400'],
+            on('*', () => {
+                systemd.service('lc', {
+                    name: unit,
+                    type: 'simple',
+                    exec: ['/usr/bin/sleep', '86400'],
+                });
             });
         });
         expect(create.plans).toHaveLength(1);
-        expect(create.plans[0]!.created).toContain('lc');
+        expect(create.plans[0]!.created).toContain(id);
         expect(create.plans[0]!.unchanged).toEqual([]);
         expect(create.results).toHaveLength(1);
-        expect(create.results[0]!.completed).toContain('lc');
+        expect(create.results[0]!.completed).toContain(id);
         expect(create.results[0]!.errored).toEqual([]);
 
         expect(await vmFileExists(VM, unitPath)).toBe(true);
         await waitForServiceState(VM, `${unit}.service`, 'active');
 
         const state1 = JSON.parse(await vmRead(VM, statePath));
-        expect(state1).toHaveProperty('lc');
-        expect(state1.lc.handler).toBe('systemd.service');
-        expect(state1.lc.state.exec).toEqual(['/usr/bin/sleep', '86400']);
+        // toHaveProperty splits on '.', so pass the id as a single-element
+        // path array to treat it as a literal property name.
+        expect(state1).toHaveProperty([id]);
+        expect(state1[id].handler).toBe('systemd.service');
+        expect(state1[id].state.exec).toEqual(['/usr/bin/sleep', '86400']);
 
         const tsAfterCreate = await activeEnterTimestamp();
         expect(tsAfterCreate).not.toBe('0');
@@ -81,13 +86,15 @@ t(
         // UNCHANGED — same input, no diff
         // ----------------------------------------------------------------------
         const unchanged = await applyOnce(stack, [vmHost(VM)], () => {
-            systemd.service('lc', {
-                name: unit,
-                type: 'simple',
-                exec: ['/usr/bin/sleep', '86400'],
+            on('*', () => {
+                systemd.service('lc', {
+                    name: unit,
+                    type: 'simple',
+                    exec: ['/usr/bin/sleep', '86400'],
+                });
             });
         });
-        expect(unchanged.plans[0]!.unchanged).toContain('lc');
+        expect(unchanged.plans[0]!.unchanged).toContain(id);
         expect(unchanged.plans[0]!.created).toEqual([]);
         expect(unchanged.plans[0]!.updated).toEqual([]);
         expect(unchanged.plans[0]!.deleted).toEqual([]);
@@ -99,17 +106,19 @@ t(
         // UPDATE — change a field, expect plan diff + service restart
         // ----------------------------------------------------------------------
         const update = await applyOnce(stack, [vmHost(VM)], () => {
-            systemd.service('lc', {
-                name: unit,
-                type: 'simple',
-                exec: ['/usr/bin/sleep', '99999'], // changed
+            on('*', () => {
+                systemd.service('lc', {
+                    name: unit,
+                    type: 'simple',
+                    exec: ['/usr/bin/sleep', '99999'], // changed
+                });
             });
         });
-        expect(update.plans[0]!.updated.map((u) => u.id)).toContain('lc');
+        expect(update.plans[0]!.updated.map((u) => u.id)).toContain(id);
         expect(update.plans[0]!.updated[0]!.oldState).toMatchObject({
             exec: ['/usr/bin/sleep', '86400'],
         });
-        expect(update.results[0]!.completed).toContain('lc');
+        expect(update.results[0]!.completed).toContain(id);
 
         const newUnit = await vmRead(VM, unitPath);
         expect(newUnit).toContain('ExecStart=/usr/bin/sleep 99999');
@@ -119,7 +128,7 @@ t(
         expect(await activeEnterTimestamp()).not.toBe(tsAfterCreate);
 
         const state2 = JSON.parse(await vmRead(VM, statePath));
-        expect(state2.lc.state.exec).toEqual(['/usr/bin/sleep', '99999']);
+        expect(state2[id].state.exec).toEqual(['/usr/bin/sleep', '99999']);
 
         // ----------------------------------------------------------------------
         // DELETE — apply with no tasks; remote infers deletion
@@ -127,17 +136,17 @@ t(
         const del = await applyOnce(stack, [vmHost(VM)], () => {
             // intentionally empty
         });
-        expect(del.plans[0]!.deleted.map((d) => d.id)).toContain('lc');
+        expect(del.plans[0]!.deleted.map((d) => d.id)).toContain(id);
         expect(del.plans[0]!.deleted[0]!.oldState).toMatchObject({
             exec: ['/usr/bin/sleep', '99999'],
         });
-        expect(del.results[0]!.completed).toContain('lc');
+        expect(del.results[0]!.completed).toContain(id);
 
         expect(await vmFileExists(VM, unitPath)).toBe(false);
         await waitForServiceState(VM, `${unit}.service`, 'inactive');
 
         const state3 = JSON.parse(await vmRead(VM, statePath));
-        expect(state3).not.toHaveProperty('lc');
+        expect(state3).not.toHaveProperty([id]);
     },
     60_000,
 );

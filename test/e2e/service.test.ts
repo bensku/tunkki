@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { systemd } from '../..';
+import { on, systemd } from '../..';
 import {
     applyOnce,
     destroyStack,
@@ -25,6 +25,7 @@ const t = test.skipIf(!ready);
 const stack = uniqueStack('e2e-svc');
 const unit = `tunkki-test-${stack}`;
 const markerFile = `/tmp/${unit}.env`;
+const id = `${VM}.svc`;
 
 afterAll(async () => {
     if (!ready) return;
@@ -41,24 +42,26 @@ t(
         const env = { TUNKKI_TEST_KEY: 'hello-from-tunkki', LANG: 'C.UTF-8' };
 
         const r = await applyOnce(stack, [vmHost(VM)], () => {
-            systemd.service('svc', {
-                name: unit,
-                type: 'simple',
-                // Dump env to a file so we can inspect it from the host, then
-                // sleep so the unit stays active.
-                exec: [
-                    '/bin/sh',
-                    '-c',
-                    `printenv | sort > ${markerFile}; exec /usr/bin/sleep 86400`,
-                ],
-                environment: env,
-                restart: 'always',
-                install: { wantedBy: 'multi-user.target' },
+            on('*', () => {
+                systemd.service('svc', {
+                    name: unit,
+                    type: 'simple',
+                    // Dump env to a file so we can inspect it from the host, then
+                    // sleep so the unit stays active.
+                    exec: [
+                        '/bin/sh',
+                        '-c',
+                        `printenv | sort > ${markerFile}; exec /usr/bin/sleep 86400`,
+                    ],
+                    environment: env,
+                    restart: 'always',
+                    install: { wantedBy: 'multi-user.target' },
+                });
             });
         });
 
         expect(r.results[0]!.errored).toEqual([]);
-        expect(r.results[0]!.completed).toContain('svc');
+        expect(r.results[0]!.completed).toContain(id);
 
         // Service must be active before printenv has had a chance to run.
         await waitForServiceState(VM, `${unit}.service`, 'active');

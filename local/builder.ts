@@ -1,25 +1,70 @@
-import type { TagSet } from '../common/task';
-import type { Task } from './task';
+import type { Host } from '@bensku/tunkki';
+import { log } from '../common/log';
+import type { TaskOptions } from '../task';
+import type { Task, TaskSource } from './task';
 
+/**
+ * Task sources. Filled BEFORE deploy() has been called!
+ */
+const taskSources: TaskSource[] = [];
+
+export function addSource(src: TaskSource) {
+    taskSources.push(src);
+}
+
+/**
+ * Tasks by their host. Filled DURING deploy()!
+ */
 export const tasks: Task[] = [];
 const idStack: string[] = [];
-const targetStack: TagSet[] = [];
+let currentHost: string | null = null;
+
+/**
+ * Reset all builder state — both sources and loaded tasks. Used by tests
+ * that need a clean slate between runs.
+ */
+export function clearAll() {
+    taskSources.length = 0;
+    tasks.length = 0;
+    idStack.length = 0;
+    currentHost = null;
+}
 
 export function addTask(
     id: string,
     task: string,
     state: unknown,
-    dependsOn: string[] | undefined,
-    rolling: boolean,
+    opts: TaskOptions,
 ) {
-    tasks.push({
-        id: idStack.join('.') + id,
-        applyOn: targetStack.at(-1) ?? { host: '*' },
+    if (!currentHost) {
+        throw new Error('cannot add tasks outside on(...) block');
+    }
+    const t = {
+        id,
+        host: currentHost,
         state,
         type: task,
-        dependsOn,
-        rolling,
-    });
+        after: opts.after ?? [],
+        onChanged: opts.onChanged,
+        localData: {},
+    };
+    tasks.push(t);
+    return t;
+}
+
+export function enterHost(hostId: string): number {
+    if (currentHost !== null) {
+        throw new Error('internal error: enterHost() called before exitHost()');
+    }
+    currentHost = hostId;
+    return tasks.length;
+}
+
+export function exitHost() {
+    if (currentHost === null) {
+        throw new Error('internal error: exitHost() called twice');
+    }
+    currentHost = null;
 }
 
 export function pushId(id: string) {
@@ -30,10 +75,19 @@ export function popId() {
     idStack.pop();
 }
 
-export function pushTargets(tags: TagSet) {
-    targetStack.push(tags);
+export function qualifyId(id: string) {
+    const path = [currentHost, ...idStack, id];
+    return path.join('.');
 }
 
-export function popTargets() {
-    targetStack.pop();
+export async function loadTasks(hosts: Host[]) {
+    // Sources are run sequentially because enterHost/exitHost mutate global
+    // state — two sources racing on the same host would collide.
+    for (const src of taskSources) {
+        let prev: Task | undefined;
+        for (const host of hosts) {
+            prev = await src(host, prev);
+        }
+    }
+    log.debug('loaded tasks', 'count', tasks.length);
 }

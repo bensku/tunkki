@@ -22,6 +22,7 @@ export interface ParsedCli {
         json: boolean;
         color: boolean;
         quiet: boolean;
+        reapply: boolean;
         /** 0 debug | 1 info | 2 error | 3 silent */
         logLevel: number;
         stackOverride?: string;
@@ -146,6 +147,7 @@ export function parseCli(input: string[]): ParsedCli {
         command === 'plan' || command === 'apply' || command === 'destroy';
     const wantsYes = command === 'apply' || command === 'destroy';
     const wantsHost = command === 'tasks';
+    const wantsReapply = command === 'plan' || command === 'apply';
 
     const options: Options = {
         json: { type: 'boolean' },
@@ -155,6 +157,7 @@ export function parseCli(input: string[]): ParsedCli {
     if (wantsStack) options.stack = { type: 'string' };
     if (wantsYes) options.yes = { type: 'boolean', short: 'y' };
     if (wantsHost) options.host = { type: 'string' };
+    if (wantsReapply) options.reapply = { type: 'boolean' };
 
     let parsed: ReturnType<typeof parseArgs>;
     try {
@@ -195,6 +198,7 @@ export function parseCli(input: string[]): ParsedCli {
             json,
             color,
             quiet: pre.quiet,
+            reapply: values.reapply === true,
             logLevel: logLevelFrom(pre.verbose, pre.quiet),
             stackOverride:
                 typeof values.stack === 'string' ? values.stack : undefined,

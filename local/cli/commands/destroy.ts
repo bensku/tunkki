@@ -26,27 +26,44 @@ export async function run(ctx: CliContext): Promise<number> {
 
     // For destroy, every host's task map is "empty" — pool.plan(stack, true)
     // sends [] as tasks, so the runner reports every existing task as deleted.
-    const tasksByHost = buildTasksByHost(ctx.hosts);
     const pool = await connect(ctx.hosts);
+    const tasksByHost = buildTasksByHost(ctx.hosts);
+    const showInternal = flags.logLevel <= 1;
+    const noopIds = new Set<string>();
+    if (!showInternal) {
+        for (const tasks of tasksByHost.values()) {
+            for (const t of tasks) {
+                if (t.type === '$noop') noopIds.add(t.id);
+            }
+        }
+    }
     try {
-        const plans = await pool.plan(ctx.stack, true);
+        const plans = await pool.plan(ctx.stack, 'destroy');
 
         if (!flags.json) {
-            printPlan(plans, tasksByHost, {
-                color: flags.color,
-                json: false,
-                quiet: flags.quiet,
-                showUnchanged: false,
-            });
+            printPlan(
+                plans,
+                tasksByHost,
+                {
+                    color: flags.color,
+                    json: false,
+                    quiet: flags.quiet,
+                    showUnchanged: false,
+                },
+                noopIds,
+            );
         }
 
-        const totalChanges = plans.reduce((n, p) => n + p.deleted.length, 0);
+        const totalChanges = plans.reduce(
+            (n, p) => n + p.deleted.filter((d) => !noopIds.has(d.id)).length,
+            0,
+        );
         if (totalChanges === 0) {
             if (!flags.json) {
                 process.stdout.write('Nothing to destroy.\n');
             } else {
                 printJson({
-                    plans: stripPlans(plans),
+                    plans: stripPlans(plans, noopIds),
                     results: [],
                     events: [],
                 });
@@ -66,6 +83,7 @@ export async function run(ctx: CliContext): Promise<number> {
         const events: Event[] = [];
         const results: Result[] = await pool.execute(plans, (event) => {
             events.push(event);
+            if (noopIds.has(event.taskId)) return;
             liveProgress(event, {
                 color: flags.color,
                 json: flags.json,
@@ -76,7 +94,7 @@ export async function run(ctx: CliContext): Promise<number> {
 
         if (flags.json) {
             printJson({
-                plans: stripPlans(plans),
+                plans: stripPlans(plans, noopIds),
                 results,
                 events: events.map((e) => ({
                     host: e.host.id,
@@ -87,7 +105,20 @@ export async function run(ctx: CliContext): Promise<number> {
                 })),
             });
         } else {
-            printSummary(results, {
+            const summaryResults =
+                noopIds.size === 0
+                    ? results
+                    : results.map((r) => ({
+                          ...r,
+                          completed: r.completed.filter(
+                              (id) => !noopIds.has(id),
+                          ),
+                          skipped: r.skipped.filter((id) => !noopIds.has(id)),
+                          errored: r.errored.filter(
+                              (e) => !noopIds.has(e.taskId),
+                          ),
+                      }));
+            printSummary(summaryResults, {
                 color: flags.color,
                 json: false,
                 quiet: flags.quiet,
@@ -104,12 +135,13 @@ export async function run(ctx: CliContext): Promise<number> {
 
 function stripPlans(
     plans: Awaited<ReturnType<Awaited<ReturnType<typeof connect>>['plan']>>,
+    noopIds: Set<string>,
 ) {
     return plans.map((p) => ({
         host: p.host.id,
-        unchanged: p.unchanged,
-        created: p.created,
-        updated: p.updated,
-        deleted: p.deleted,
+        unchanged: p.unchanged.filter((id) => !noopIds.has(id)),
+        created: p.created.filter((id) => !noopIds.has(id)),
+        updated: p.updated.filter((u) => !noopIds.has(u.id)),
+        deleted: p.deleted.filter((d) => !noopIds.has(d.id)),
     }));
 }

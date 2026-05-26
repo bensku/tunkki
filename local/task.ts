@@ -1,4 +1,5 @@
-import type { Step } from '@bensku/tunkki/task';
+import { type Step, step } from '@bensku/tunkki/task';
+import type { Host } from '..';
 import type { TagSet, TaskHandler } from '../common/task';
 
 export interface Task {
@@ -8,9 +9,9 @@ export interface Task {
     id: string;
 
     /**
-     * If one of these tag,value pairs is found, run this task.
+     * Id of host this task will be deployed to.
      */
-    applyOn: TagSet;
+    host: string;
 
     /**
      * Task state. Diffed by runner with deep equality; if there is no change,
@@ -24,16 +25,26 @@ export interface Task {
     type: string;
 
     /**
-     * If this task cannot begin execution before other tasks have finished,
-     * ids of those other tasks.
+     * This task must be executed after these tasks.
      */
-    dependsOn?: string[];
+    after: string[];
 
     /**
-     * If this task is rolling. A rolling task must be executed host-by-host.
+     * This task must be executed these tasks were changed, even if its own
+     * state did not change at all.
      */
-    rolling?: boolean;
+    onChanged?: string[];
+
+    /**
+     * Data that is passed to all local steps.
+     */
+    localData: Record<string, unknown>;
 }
+
+export type TaskSource = (
+    host: Host,
+    prevEnd: Task | undefined,
+) => Promise<Task | undefined>;
 
 /**
  * Task type names to handler ids.
@@ -54,9 +65,13 @@ export async function loadHandlerCode(
 ): Promise<Record<string, string>> {
     const code: Record<string, string> = {};
     for (const task of tasks) {
-        if (!code[task.type]) {
-            // Need to load new handler
-            const file = await Bun.file(`${handlers.get(task.type)}.ts`).text();
+        if (!code[task.type] && !task.type.startsWith('$')) {
+            // Need to load new handler ($delete and $noop are special cases and have no handlers)
+            const handler = handlers.get(task.type);
+            if (!handler) {
+                throw new Error(`missing task handler: ${task.type}`);
+            }
+            const file = await Bun.file(`${handler}.ts`).text();
             code[task.type] = file;
         }
     }
@@ -72,7 +87,10 @@ export async function loadHandlerCode(
 export async function loadSteps(
     tasks: Task[],
 ): Promise<Record<string, Step[]>> {
-    const steps: Record<string, Step[]> = {};
+    const steps: Record<string, Step[]> = {
+        // Special case: no-nothing task. $noop is as dependent and dependency in rolling deploys
+        $noop: [step('remote', async () => undefined)],
+    };
     for (const task of tasks) {
         if (!steps[task.type]) {
             // Load new module and get apply steps
@@ -90,21 +108,4 @@ export async function loadSteps(
         }
     }
     return steps;
-}
-
-/**
- * Filters tasks that are not applicable to given tags out.
- * @param tasks List of all tasks.
- * @param tags Tags to filter with. For example, hosts's tags
- * @returns Filtered list of tasks.
- */
-export function filterTasks(tasks: Task[], tags: TagSet) {
-    return tasks.filter((task) => {
-        for (const [tag, value] of Object.entries(task.applyOn)) {
-            if (tags[tag] && new Bun.Glob(value).match(tags[tag])) {
-                return true;
-            }
-        }
-        return false;
-    });
 }

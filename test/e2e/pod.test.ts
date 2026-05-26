@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test';
-import { podman } from '../..';
+import { on, podman } from '../..';
 import {
     applyOnce,
     destroyStack,
@@ -42,21 +42,23 @@ t(
     'podman.pod + podman.container apply, run, and depend in order',
     async () => {
         const r = await applyOnce(stack, [vmHost(VM)], () => {
-            const pod = podman.pod('pod', { name: podName });
-            podman.container(
-                'app',
-                {
-                    name: 'app',
-                    image: 'docker.io/library/nginx:latest', // pre-cached on the VM
-                    pod: `${podName}.pod`,
-                },
-                { dependsOn: [pod.id] },
-            );
+            on('*', () => {
+                const pod = podman.pod('pod', { name: podName });
+                podman.container(
+                    'app',
+                    {
+                        name: 'app',
+                        image: 'docker.io/library/nginx:latest', // pre-cached on the VM
+                        pod: `${podName}.pod`,
+                    },
+                    { after: [pod.id] },
+                );
+            });
         });
 
         expect(r.results[0]!.errored).toEqual([]);
         expect(r.results[0]!.completed).toEqual(
-            expect.arrayContaining(['pod', 'app']),
+            expect.arrayContaining([`${VM}.pod`, `${VM}.app`]),
         );
 
         expect(
