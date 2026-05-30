@@ -2,6 +2,7 @@ import type { Host } from '@bensku/tunkki';
 import { log } from '../common/log';
 import type { TaskOptions } from '../task';
 import type { Task, TaskSource } from './task';
+import { validateTasks } from './validate';
 
 /**
  * Task sources. Filled BEFORE deploy() has been called!
@@ -39,14 +40,20 @@ export function addTask(
     if (!currentHost) {
         throw new Error('cannot add tasks outside on(...) block');
     }
+    const after = opts.after ? [...opts.after] : [];
+    const onChanged = opts.onChanged ? [...opts.onChanged] : [];
+    if (opts.dependsOn) {
+        after.push(...opts.dependsOn);
+        onChanged.push(...opts.dependsOn);
+    }
     const t = {
         id,
         host: currentHost,
         state,
         type: task,
-        after: opts.after ?? [],
-        onChanged: opts.onChanged,
-        localData: {},
+        after,
+        onChanged,
+        localData: {} as { host: Host },
     };
     tasks.push(t);
     return t;
@@ -90,4 +97,6 @@ export async function loadTasks(hosts: Host[]) {
         }
     }
     log.debug('loaded tasks', 'count', tasks.length);
+    validateTasks(tasks);
+    log.debug('validated tasks successfully');
 }

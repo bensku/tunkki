@@ -42,6 +42,12 @@ export interface TaskOptions {
      * after uploading updated binaries.
      */
     onChanged?: string[];
+
+    /**
+     * Ids of tasks that must be applied before this task and require this
+     * task to be reapplied if they change. I.e. after + onChanged
+     */
+    dependsOn?: string[];
 }
 export type TaskType<S, O extends Output> = (
     id: string,
@@ -60,7 +66,7 @@ export function taskType<S, O>(
         builder.addTask(qualifiedId, name, state, opts ?? {});
         return {
             id: qualifiedId,
-            ...(outputSource ? outputSource(id, state) : {}),
+            ...(outputSource ? outputSource(qualifiedId, state) : {}),
         } as O & { id: string };
     };
 }
@@ -70,11 +76,25 @@ export function combine<S, O>(
     handler: (state: S, opts: TaskOptions) => O | void,
 ): TaskType<S, O & { id: string }> {
     return (id, state, opts) => {
+        const startIdx = builder.tasks.length;
         builder.pushId(id);
         const output = handler(state, opts ?? {});
+
+        const tasks = [];
+        for (let i = startIdx; i < builder.tasks.length; i++) {
+            tasks.push(builder.tasks[i]!.id);
+        }
+        const end = builder.addTask(
+            builder.qualifyId(`${id}-end`),
+            '$noop',
+            {},
+            {
+                dependsOn: tasks,
+            },
+        );
         builder.popId();
         return {
-            id: builder.tasks.at(-1)?.id,
+            id: end.id,
             ...(output ?? {}),
         } as O & { id: string };
     };

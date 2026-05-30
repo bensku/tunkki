@@ -16,10 +16,10 @@ ln -sf "$FW_SRC" "$FW_LINK"
 for vm in "${VMS[@]}"; do
     if limactl ls -q | grep -qx "$vm"; then
         echo "[$vm] already exists, starting if stopped"
-        limactl start "$vm"
+        limactl start --network=lima:user-v2 "$vm"
     else
         echo "[$vm] creating and starting"
-        limactl start --tty=false --containerd=none --name="$vm" "$TEMPLATE"
+        limactl start --network=lima:user-v2 --tty=false --containerd=none --name="$vm" "$TEMPLATE"
     fi
 done
 

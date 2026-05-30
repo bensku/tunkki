@@ -43,6 +43,15 @@ interface UploadHandlers extends BaseEvent {
 }
 
 /**
+ * Remote->local. Fatal error when e.g. trying to load handlers.
+ */
+interface FatalError extends BaseEvent {
+    type: 'fatal';
+
+    error: string;
+}
+
+/**
  * Local->remote. Task and its state for remote to compare against previous
  * state. Remote will reply with Status.
  */
@@ -175,6 +184,7 @@ export type Event =
     | Hello
     | Settings
     | UploadHandlers
+    | FatalError
     | Task
     | TasksSent
     | Status

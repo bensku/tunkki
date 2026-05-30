@@ -47,6 +47,11 @@ export async function plan(
         for await (const event of conn.listen()) {
             log.debug('remote->local', event);
             switch (event.type) {
+                case 'fatal': {
+                    throw new Error(
+                        `fatal error on host ${conn.host.id}: ${event.error}`,
+                    );
+                }
                 case 'status': {
                     switch (event.status) {
                         case 'unchanged':
@@ -164,7 +169,9 @@ export async function newExecutor(
     const SHUTDOWN_SENTINEL = Symbol('shutdown');
 
     async function* listenEvents(): AsyncGenerator<Event> {
-        if (changed.length === 0) return;
+        if (changed.length === 0) {
+            return;
+        }
 
         const taskMap = new Map(changed.map((t) => [t.id, t]));
         const currentStep: Map<string, number> = new Map();
@@ -182,6 +189,11 @@ export async function newExecutor(
             if (next.done) return;
             const event = next.value;
             switch (event.type) {
+                case 'fatal': {
+                    throw new Error(
+                        `fatal error on host ${conn.host.id}: ${event.error}`,
+                    );
+                }
                 case 'done': {
                     const task = taskMap.get(event.id)!;
                     switch (event.status) {
@@ -272,11 +284,18 @@ async function runStep(
 ) {
     const taskSteps = steps[task.type];
     if (!taskSteps) {
-        throw new Error(`internal error: task ${task.id} steps not loaded`);
+        throw new Error(
+            `internal error: task ${task.id} steps not loaded (type ${task.type})`,
+        );
     }
     const step = taskSteps.at(stepIdx);
     if (!step) {
         throw new Error(); // Validation should've failed this well before we got to runTasks!
+    }
+
+    // Inject host into localData before first step
+    if (stepIdx === 0) {
+        task.localData.host = conn.host;
     }
 
     if (step.location === 'local') {
@@ -288,15 +307,8 @@ async function runStep(
                 // subsequent steps receive their predecessor's result as state.
                 result =
                     stepIdx === 0
-                        ? await step.handler(
-                              state,
-                              { ...task.localData, host: conn.host },
-                              oldState,
-                          )
-                        : await step.handler(state, {
-                              ...task.localData,
-                              host: conn.host,
-                          });
+                        ? await step.handler(state, task.localData, oldState)
+                        : await step.handler(state, task.localData);
             } catch (e) {
                 error = e;
             }

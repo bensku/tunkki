@@ -38,7 +38,7 @@ export interface Task {
     /**
      * Data that is passed to all local steps.
      */
-    localData: Record<string, unknown>;
+    localData: Record<string, unknown> & { host: Host };
 }
 
 export type TaskSource = (

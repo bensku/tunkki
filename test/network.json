@@ -1,0 +1,32 @@
+{
+    "prefix": "fdce:1743:c829::/48",
+    "dynamicIpArea": "fdce:1743:c829:8000::/49",
+    "signingCA": {
+        "key": "cas/signing-2026-05-23-3.key",
+        "cert": "cas/signing-2026-05-23-3.crt"
+    },
+    "trustedCAs": [
+        {
+            "key": "cas/signing-2026-05-23.key",
+            "cert": "cas/signing-2026-05-23.crt"
+        },
+        {
+            "key": "cas/signing-2026-05-23-2.key",
+            "cert": "cas/signing-2026-05-23-2.crt"
+        },
+        {
+            "key": "cas/signing-2026-05-23-3.key",
+            "cert": "cas/signing-2026-05-23-3.crt"
+        }
+    ],
+    "lighthouses": [
+        {
+            "vpnIp": "fdce:1743:c829:739a:f433:a817:781f:bec9",
+            "underlayAddr": "lima-test1.internal:4242"
+        },
+        {
+            "vpnIp": "fdce:1743:c829:1980:4cf0:a711:d0da:3b33",
+            "underlayAddr": "lima-test2.internal:4242"
+        }
+    ]
+}

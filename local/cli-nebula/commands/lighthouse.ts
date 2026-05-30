@@ -25,10 +25,10 @@ export async function runLighthouseAdd(
                 `--ip ${cmd.ip} is not inside prefix ${network.prefix}`,
             );
         }
-        if (cidrContainsIp(cmd.ip, network.dynamicIpArea)) {
+        if (cidrContainsIp(cmd.ip, network.dynamicPrefix)) {
             throw new CliExitError(
                 2,
-                `--ip ${cmd.ip} falls inside dynamicIpArea ${network.dynamicIpArea} (reserved for auto-assigned endpoints)`,
+                `--ip ${cmd.ip} falls inside dynamicIpArea ${network.dynamicPrefix} (reserved for auto-assigned endpoints)`,
             );
         }
         if (usedIps.has(normalizeIp(cmd.ip))) {
@@ -39,15 +39,15 @@ export async function runLighthouseAdd(
         }
         vpnIp = cmd.ip;
     } else {
-        if (!cidrContainsCidr(network.dynamicIpArea, network.prefix)) {
+        if (!cidrContainsCidr(network.dynamicPrefix, network.prefix)) {
             throw new CliExitError(
                 1,
-                `dynamicIpArea ${network.dynamicIpArea} is not inside prefix ${network.prefix}; cannot auto-allocate`,
+                `dynamicIpArea ${network.dynamicPrefix} is not inside prefix ${network.prefix}; cannot auto-allocate`,
             );
         }
         vpnIp = allocateStaticIp({
             prefix: network.prefix,
-            excluded: network.dynamicIpArea,
+            excluded: network.dynamicPrefix,
             used: usedIps,
         });
     }

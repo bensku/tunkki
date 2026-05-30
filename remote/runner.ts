@@ -33,12 +33,6 @@ export class Runner {
     #dependents: Map<string, Set<string>>;
 
     /**
-     * Tasks that have fully completed, i.e. all steps run without errors or
-     * task was entirely skipped.
-     */
-    #completed: Set<string>;
-
-    /**
      * Tasks that errored, or that were skipped due to a transitive failed
      * dependency. New `run` events for these reply `skipped` immediately.
      */
@@ -60,7 +54,6 @@ export class Runner {
         this.#seenTasks = new Set();
         this.#tasks = new Map();
         this.#dependents = new Map();
-        this.#completed = new Set();
         this.#failed = new Set();
         this.#pending = new Map();
         this.#saveLock = new Semaphore(1);
@@ -234,7 +227,12 @@ export class Runner {
         try {
             const task = this.#tasks.get(event.id);
             if (!task) {
-                throw new Error(`missing task: ${event.id}`);
+                log.error(
+                    'missing task, possibly after interrupted deploy',
+                    'task',
+                    event.id,
+                );
+                return;
             }
             const steps = Array.isArray(task.handler.apply)
                 ? task.handler.apply
@@ -293,7 +291,7 @@ export class Runner {
                     'error',
                     e,
                 );
-                result = `${e}`;
+                result = Bun.inspect(e);
                 errored = true;
             }
 

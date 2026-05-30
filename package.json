@@ -6,8 +6,12 @@
         "./task": "./task/index.ts",
         "./task/util": "./task/util/index.ts"
     },
+    "bin": {
+        "tunkki-nebula": "./nebula-cli.ts"
+    },
     "files": [
         "index.ts",
+        "nebula-cli.ts",
         "protocol.ts",
         "common",
         "local",
@@ -25,5 +29,8 @@
     },
     "peerDependencies": {
         "typescript": "^5"
+    },
+    "dependencies": {
+        "ipaddr.js": "^2.4.0"
     }
 }

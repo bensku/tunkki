@@ -39,7 +39,7 @@ export async function runInit(
 
     const network: Network = {
         prefix,
-        dynamicIpArea,
+        dynamicPrefix: dynamicIpArea,
         signingCA: ca,
         trustedCAs: [ca],
         lighthouses: [],

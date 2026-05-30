@@ -208,6 +208,7 @@ export class TargetPool {
         // path; otherwise we'd queue the same id twice (causing duplicate
         // `run` events and double cleanup, which is what `destroy` triggered
         // when this.#tasks was still populated).
+        // TODO couldn't we just detect if this is destroy, and act accordingly if so?
         const deletedIds = new Set<string>();
         for (const plan of plans) {
             for (const entry of plan.deleted) deletedIds.add(entry.id);
@@ -221,7 +222,7 @@ export class TargetPool {
                     type: '$delete',
                     after: [],
                     state: undefined,
-                    localData: {},
+                    localData: {} as { host: Host },
                 });
             }
         }
@@ -265,12 +266,15 @@ export class TargetPool {
         // Mark unchanged tasks as completed (skipped means "skipped due to dependency error" and cascades; don't use it here!)
         for (const plan of plans) {
             for (const taskId of plan.unchanged) {
-                onCompleted({
-                    host: plan.host,
-                    type: 'completed',
-                    taskId,
-                    status: 'done',
-                });
+                onCompleted(
+                    {
+                        host: plan.host,
+                        type: 'completed',
+                        taskId,
+                        status: 'done',
+                    },
+                    true,
+                );
             }
         }
 
@@ -326,7 +330,7 @@ export class TargetPool {
             callback?.(event);
             switch (event.type) {
                 case 'completed': {
-                    onCompleted(event);
+                    onCompleted(event, false);
                     const result = byHost.get(event.host.id);
                     if (!result) {
                         throw new Error(

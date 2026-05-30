@@ -79,7 +79,7 @@ export async function runCli(stack: string, hosts: Host[]): Promise<never> {
         const code = await COMMAND_RUNNERS[cli.command](ctx);
         process.exit(code);
     } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = Bun.inspect(e);
         if (cli.flags.json) {
             printJsonError(msg);
         } else {

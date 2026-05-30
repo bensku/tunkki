@@ -47,7 +47,7 @@ function validateNetwork(value: unknown, file: string): Network {
 
     return {
         prefix: obj.prefix as string,
-        dynamicIpArea: obj.dynamicIpArea as string,
+        dynamicPrefix: obj.dynamicIpArea as string,
         signingCA,
         trustedCAs,
         lighthouses,

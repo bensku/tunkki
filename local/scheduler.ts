@@ -17,7 +17,10 @@ export interface ScheduledTask {
 
 export function newTaskScheduler(
     tasks: Task[],
-): [() => AsyncGenerator<ScheduledTask>, (event: Event) => void] {
+): [
+    () => AsyncGenerator<ScheduledTask>,
+    (event: Event, initial: boolean) => void,
+] {
     // Create nodes from tasks for later usage
     const nodes: Map<string, Node> = new Map();
     for (const task of tasks) {
@@ -40,22 +43,31 @@ export function newTaskScheduler(
 
     const schedulerQueue: ScheduledTask[] = [];
     const queueTask = (node: Node) => {
-        if (
-            node.status !== 'done' &&
-            node.task.after?.length === node.doneDeps
-        ) {
-            schedulerQueue.push({
-                task: node.task,
-                status: 'ready',
-            });
-        } // else: completed or not yet ready; either way, don't queue it
-        log.debug(
-            'cannot queue task yet due to dependencies',
-            'needed',
-            node.task.after.length,
-            'done',
-            node.doneDeps,
-        );
+        if (node.task.after?.length === node.doneDeps) {
+            if (node.status !== 'done') {
+                log.debug(
+                    'task queued',
+                    'task',
+                    node.task.id,
+                    'status',
+                    node.status,
+                );
+                schedulerQueue.push({
+                    task: node.task,
+                    status: 'ready',
+                });
+            } // else: task already done
+        } else if (node.status !== 'done') {
+            log.debug(
+                'pending dependencies',
+                'task',
+                node.task.id,
+                'needed',
+                node.task.after,
+                'done',
+                node.doneDeps,
+            );
+        }
     };
 
     const skipTask = (node: Node) => {
@@ -74,7 +86,7 @@ export function newTaskScheduler(
 
     let wake!: () => void;
     let waker = new Promise<void>((r) => (wake = r));
-    const handleCompleted = (event: Event) => {
+    const handleCompleted = (event: Event, initial: boolean) => {
         if (event.type !== 'completed') {
             return; // Not interested in other kinds of events
         }
@@ -85,35 +97,49 @@ export function newTaskScheduler(
         }
         node.status = event.status;
         pending--;
-        log.debug('task completed', 'pending', pending, 'status', event.status);
+        log.debug(
+            'task completed',
+            'task',
+            event.taskId,
+            'pending',
+            pending,
+            'status',
+            event.status,
+        );
 
         if (event.status === 'done') {
             // Try starting our dependents
             for (const dep of node.dependents) {
                 const node = nodes.get(dep)!;
                 node.doneDeps++;
-                queueTask(node);
+                if (!initial) {
+                    queueTask(node);
+                } // else: we'll get this when looping over ALL tasks later
             }
         } else {
-            // Cascade skip to dependents. skipTask is idempotent — a node
-            // that's already been marked skipped (e.g. via a sibling's
-            // cascade) is left alone.
+            // Cascade skip to dependents
             for (const dep of node.dependents) {
                 skipTask(nodes.get(dep)!);
             }
         }
-
-        wake();
-        waker = new Promise<void>((r) => (wake = r));
+        if (!initial) {
+            wake();
+            waker = new Promise<void>((r) => (wake = r));
+        }
     };
 
     async function* scheduleTasks(): AsyncGenerator<ScheduledTask> {
-        // Schedule all tasks that don't have dependencies for immediate execution
+        // Try to schedule all tasks for execution. queueTask can handle dependency tracking
         for (const task of tasks) {
-            if (task.after?.length === 0) {
-                queueTask(nodes.get(task.id)!);
-            }
+            queueTask(nodes.get(task.id)!);
         }
+        log.debug(
+            'initial scheduler pass complete',
+            'pending',
+            pending,
+            'total',
+            tasks.length,
+        );
 
         // Yield tasks as they become available
         while (pending > 0) {
