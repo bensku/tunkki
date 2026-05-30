@@ -91,7 +91,7 @@ export type VolumeEntry = {
     options?: string[];
 };
 
-export type VolumeSpec = string | VolumeEntry | (string | VolumeEntry)[];
+export type VolumeSpec = VolumeEntry[];
 
 function renderVolumeOne(v: string | VolumeEntry): string {
     if (typeof v === 'string') return v;

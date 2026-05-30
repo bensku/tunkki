@@ -176,8 +176,7 @@ export type State = {
 
     /**
      * `Volume=` — bind mounts and named volumes attached to the container.
-     * Accepts the raw `source:target[:options]` string, a structured
-     * {@link VolumeEntry}, or a mixed array of either.
+     * Accepts array of {@link VolumeEntry}, use mount if you need more options.
      */
     volume?: podman.VolumeSpec;
     /**
@@ -194,6 +193,11 @@ export type State = {
     workingDir?: string;
     /** `ReadOnly=` — mount the container's root filesystem read-only. */
     readOnly?: boolean;
+
+    /**
+     * Config mounts.
+     */
+    configFiles?: [string, string][];
 
     /** `Memory=` — hard memory limit (e.g. `512m`, `2g`). */
     memory?: string;
@@ -350,6 +354,18 @@ export function toContainerUnit(spec: State): systemd.UnitFile {
 }
 
 export const apply = step('remote', async (state: State) => {
+    state = { ...state, volume: state.volume ? [...state.volume] : [] }
+    if (state.configFiles !== undefined) {
+        // Patch config mounts into real volumes
+        for (const [idx, [path, content]] of state.configFiles.entries()) {
+            const file = `/etc/containers/tunkki-configs/${state.name}-${idx}`;
+            state.volume?.push({
+                source: file,
+                target: path,
+            });
+            await Bun.file(file).write(content);
+        }
+    }
     const data = systemd.serializeUnitFile(toContainerUnit(state));
 
     const containerName = state.pod ? `${state.pod}-${state.name}` : state.name;

@@ -1,6 +1,6 @@
 {
     "prefix": "fdce:1743:c829::/48",
-    "dynamicIpArea": "fdce:1743:c829:8000::/49",
+    "dynamicPrefix": "fdce:1743:c829:8000::/49",
     "signingCA": {
         "key": "cas/signing-2026-05-23-3.key",
         "cert": "cas/signing-2026-05-23-3.crt"

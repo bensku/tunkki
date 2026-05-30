@@ -40,14 +40,14 @@ function validateNetwork(value: unknown, file: string): Network {
     }
     const obj = value as Record<string, unknown>;
     requireCidr(obj.prefix, 'prefix', file);
-    requireCidr(obj.dynamicIpArea, 'dynamicIpArea', file);
+    requireCidr(obj.dynamicPrefix, 'dynamicPrefix', file);
     const signingCA = requireCA(obj.signingCA, 'signingCA', file);
     const trustedCAs = requireCAList(obj.trustedCAs, 'trustedCAs', file);
     const lighthouses = requireLighthouses(obj.lighthouses, file);
 
     return {
         prefix: obj.prefix as string,
-        dynamicPrefix: obj.dynamicIpArea as string,
+        dynamicPrefix: obj.dynamicPrefix as string,
         signingCA,
         trustedCAs,
         lighthouses,

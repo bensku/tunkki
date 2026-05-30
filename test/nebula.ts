@@ -33,22 +33,13 @@ on('*', (host) => {
                 ],
             },
         },
-        { dependsOn: [setup.id] },
+        { after: [setup.id] },
     );
     hostEndpoint.service();
 
-    const netavarkSetup = nebula.netavarkSetup('netavark-setup', {
+    nebula.netavarkSetup('netavark-setup', {
         localPath: '../nebula-netavark',
     });
-    podman.network(
-        'nebulanet',
-        {
-            name: 'nebula',
-            driver: 'nebula',
-            networkDeleteOnStop: true,
-        },
-        { dependsOn: [netavarkSetup.id] },
-    );
 });
 
 on('test1', () => {
@@ -62,7 +53,7 @@ on('test1', () => {
             inbound: [
                 {
                     port: 'any',
-                    groups: ['host'],
+                    group: 'host',
                 },
             ],
         },

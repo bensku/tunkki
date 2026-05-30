@@ -16,6 +16,7 @@ Commands:
   distrust-ca <file> [sel]   Remove a CA from trustedCAs (cannot remove signingCA)
   lighthouse add <file> ...  Add a lighthouse (auto-allocates VPN IP by default)
   lighthouse remove <file>   Remove a lighthouse by VPN IP or underlay address
+  static-ip <file>           Generate a random fixed IP outside dynamicIpArea
 
 Global flags:
       --no-color    Disable ANSI colors even on a TTY
@@ -75,5 +76,15 @@ Subcommands:
   remove <file> <selector> [--ip|--underlay] [--all]
       Remove a lighthouse. The selector matches against either vpnIp or
       underlayAddr; use --ip or --underlay to restrict the match.
+`,
+    'static-ip': `Usage: tunkki-nebula static-ip <file> [flags]
+
+Generate one or more random fixed IPs inside the network prefix but
+outside dynamicIpArea, avoiding collisions with existing lighthouses.
+Useful for assigning static IPs by hand. The network file is not
+modified.
+
+Flags:
+      --count <n>              Number of IPs to generate (default: 1)
 `,
 };

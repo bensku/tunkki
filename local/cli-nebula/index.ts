@@ -2,6 +2,7 @@ import { runDistrustCa } from './commands/distrust-ca';
 import { runInit } from './commands/init';
 import { runLighthouseAdd, runLighthouseRemove } from './commands/lighthouse';
 import { runNewCa } from './commands/new-ca';
+import { runStaticIp } from './commands/static-ip';
 import { CliExitError, type ParsedCli, parseCli } from './parse';
 
 export type { ParsedCli } from './parse';
@@ -55,5 +56,7 @@ async function dispatch(ctx: NebulaCliContext): Promise<number> {
             return runLighthouseAdd(c, ctx.cli.flags);
         case 'lighthouse-remove':
             return runLighthouseRemove(c, ctx.cli.flags);
+        case 'static-ip':
+            return runStaticIp(c, ctx.cli.flags);
     }
 }

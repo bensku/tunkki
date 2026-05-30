@@ -1,10 +1,6 @@
 import * as path from 'node:path';
-import { files, systemd } from '@bensku/tunkki';
-import {
-    combine,
-    type Output,
-    taskType,
-} from '@bensku/tunkki/task';
+import { files, podman, systemd } from '@bensku/tunkki';
+import { combine, type Output, taskType } from '@bensku/tunkki/task';
 import { nebula } from '@bensku/tunkki/task/util';
 
 export type Network = nebula.Network;
@@ -58,7 +54,7 @@ export const netavarkSetup = combine<SetupState, Output>((state, opts) => {
     );
 
     // Enable nebula-netavarkd service
-    systemd.service(
+    const svc = systemd.service(
         'service',
         {
             name: 'nebula-netavarkd',
@@ -72,9 +68,23 @@ export const netavarkSetup = combine<SetupState, Output>((state, opts) => {
         },
         { ...opts, dependsOn: [daemonFile.id, pluginFile.id] },
     );
+
+    // Create podman network unless it already existed
+    podman.network(
+        'nebulanet',
+        {
+            name: 'nebula',
+            driver: 'nebula',
+            networkDeleteOnStop: true,
+        },
+        { after: [svc.id] },
+    );
 });
 
 interface EndpointOutput {
+    /**
+     * Install a Nebula service on host for this endpoint.
+     */
     service: () => Output;
 }
 

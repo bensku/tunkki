@@ -60,21 +60,35 @@ interface FirewallRuleBase {
 }
 
 interface FirewallGroupsRule extends FirewallRuleBase {
-    groups: string[];
+    group: string;
     host?: never;
 }
 
 interface FirewallHostRule extends FirewallRuleBase {
     host: string | 'any';
-    groups?: never;
+    group?: never;
 }
 
 type FirewallRule = FirewallGroupsRule | FirewallHostRule;
 
-interface Firewall {
+/**
+ * Firewall declarations is close-to-Nebula format.
+ */
+interface NebulaFirewall {
     outbound: FirewallRule[];
     inbound: FirewallRule[];
 }
+
+/**
+ * Firewall declarations in a simpler format that merges outbound and inbound.
+ */
+type SimpleFirewall = [
+    'in' | 'out', // Direction
+    number | 'any', // Port or any to allow all ports
+    string | 'any', // Group to allow or any for all groups
+][];
+
+type Firewall = NebulaFirewall | SimpleFirewall;
 
 export interface Endpoint {
     /**
@@ -146,11 +160,41 @@ export async function toNebulaConfig(endpoint: Endpoint) {
         };
     }
 
+    // Convert simple firewalls to format closer to what Nebula understands
+    let firewall: NebulaFirewall;
+    if (Array.isArray(endpoint.firewall)) {
+        firewall = {
+            outbound: [],
+            inbound: [],
+        };
+        for (const [dir, port, group] of endpoint.firewall) {
+            let rule: FirewallRule;
+            if (group === 'any') {
+                rule = {
+                    port,
+                    host: 'any',
+                };
+            } else {
+                rule = {
+                    port,
+                    group,
+                };
+            }
+            if (dir === 'in') {
+                firewall.inbound.push(rule);
+            } else {
+                firewall.outbound.push(rule);
+            }
+        }
+    } else {
+        firewall = endpoint.firewall;
+    }
+
     const formatFirewallRule = (rule: FirewallRule) => {
         return {
             port: rule.port,
             proto: rule.proto ?? 'any',
-            groups: rule.groups,
+            group: rule.group,
             host: rule.host,
         };
     };
@@ -201,8 +245,8 @@ export async function toNebulaConfig(endpoint: Endpoint) {
         firewall: {
             // TODO inbound_action, outbound_action, conntract, etc.
             // TODO unsafe hosts directly allowing hosts, allowing entire CAs, etc.
-            outbound: endpoint.firewall.outbound.map(formatFirewallRule),
-            inbound: endpoint.firewall.inbound.map(formatFirewallRule),
+            outbound: firewall.outbound.map(formatFirewallRule),
+            inbound: firewall.inbound.map(formatFirewallRule),
         },
     };
 }

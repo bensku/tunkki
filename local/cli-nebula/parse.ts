@@ -47,6 +47,11 @@ export type Command =
           selector: string;
           selectorKind?: 'ip' | 'underlay';
           all: boolean;
+      }
+    | {
+          kind: 'static-ip';
+          file: string;
+          count?: number;
       };
 
 export interface ParsedCli {
@@ -57,7 +62,13 @@ export interface ParsedCli {
     };
 }
 
-const TOP_COMMANDS = ['init', 'new-ca', 'distrust-ca', 'lighthouse'] as const;
+const TOP_COMMANDS = [
+    'init',
+    'new-ca',
+    'distrust-ca',
+    'lighthouse',
+    'static-ip',
+] as const;
 type TopCommand = (typeof TOP_COMMANDS)[number];
 
 function isTopCommand(s: string | undefined): s is TopCommand {
@@ -166,6 +177,7 @@ export function parseCli(input: string[]): ParsedCli {
     if (top === 'init') return parseInit(rest);
     if (top === 'new-ca') return parseNewCa(rest);
     if (top === 'distrust-ca') return parseDistrustCa(rest);
+    if (top === 'static-ip') return parseStaticIp(rest);
 
     throw new CliExitError(2, `unhandled command: ${top}\n${ROOT_HELP}`);
 }
@@ -332,6 +344,32 @@ function parseLighthouseRemove(args: string[]): ParsedCli {
             selectorKind,
             all: values.all === true,
         },
+        flags: makeFlags(values),
+    };
+}
+
+function parseStaticIp(args: string[]): ParsedCli {
+    const options = buildOptions({
+        count: { type: 'string' },
+    });
+    const parsed = parseSafely(args, options, 'static-ip');
+    const file = requirePositional(parsed.positionals, 0, 'file', 'static-ip');
+    const values = parsed.values as Record<string, unknown>;
+
+    let count: number | undefined;
+    if (typeof values.count === 'string') {
+        const n = Number(values.count);
+        if (!Number.isInteger(n) || n < 1) {
+            throw new CliExitError(
+                2,
+                `--count must be a positive integer\n${COMMAND_HELP['static-ip']}`,
+            );
+        }
+        count = n;
+    }
+
+    return {
+        command: { kind: 'static-ip', file, count },
         flags: makeFlags(values),
     };
 }
