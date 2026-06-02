@@ -348,13 +348,16 @@ export function toContainerUnit(spec: State): systemd.UnitFile {
             spec.service ? systemd.serviceSectionToRecord(spec.service) : {},
         ),
     };
-    if (spec.install)
-        file.Install = systemd.installSectionToRecord(spec.install);
+    file.Install = systemd.installSectionToRecord(
+        spec.install ?? {
+            wantedBy: 'multi-user.target',
+        },
+    );
     return file;
 }
 
 export const apply = step('remote', async (state: State) => {
-    state = { ...state, volume: state.volume ? [...state.volume] : [] }
+    state = { ...state, volume: state.volume ? [...state.volume] : [] };
     if (state.configFiles !== undefined) {
         // Patch config mounts into real volumes
         for (const [idx, [path, content]] of state.configFiles.entries()) {

@@ -77,7 +77,19 @@ export const netavarkSetup = combine<SetupState, Output>((state, opts) => {
             driver: 'nebula',
             networkDeleteOnStop: true,
         },
-        { after: [svc.id] },
+        { ...opts, after: [svc.id] },
+    );
+});
+
+export const bridgedSetup = combine<SetupState, Output>((state, opts) => {
+    files.put(
+        'nebula-netavarkd',
+        {
+            localPath: path.join(state.localPath, 'bridged'),
+            remotePath: '/usr/local/bin/bridged',
+            mode: 0o755,
+        },
+        opts,
     );
 });
 
@@ -113,3 +125,70 @@ export const endpoint = taskType<nebula.Endpoint, EndpointOutput>(
             ),
     }),
 );
+
+interface BridgeRoute {
+    listen: string;
+    http_host?: string;
+    sni_host?: string;
+
+    targets: string[];
+    type: 'first_healthy';
+    health: {
+        interval: string;
+        timeout: string;
+        window: number;
+        ok_threshold: number;
+        fail_threshold: number;
+    };
+}
+
+export interface BridgeState {
+    id: string;
+    ingress: Omit<nebula.Endpoint, 'id'>;
+    egress: Omit<nebula.Endpoint, 'id'>;
+    routes: BridgeRoute[];
+}
+
+export const bridge = combine<BridgeState, Output>((state, opts) => {
+    const ingress = endpoint(
+        'ingress',
+        { ...state.ingress, id: `${state.id}-ingress` },
+        opts,
+    );
+    const egress = endpoint(
+        'egress',
+        { ...state.egress, id: `${state.id}-egress` },
+        opts,
+    );
+
+    const routesCfg = files.put(
+        'routes',
+        {
+            content: state.routes,
+            remotePath: `/etc/nebula/bridges/${state.id}.yml`,
+        },
+        opts,
+    );
+
+    systemd.service(
+        'service',
+        {
+            name: `bridged-${state.id}`,
+            type: 'simple',
+            exec: [
+                '/usr/local/bin/bridged',
+                '-ingress-cfg',
+                `/etc/containers/nebula/${state.id}-ingress.yml`,
+                '-egress-cfg',
+                `/etc/containers/nebula/${state.id}-egress.yml`,
+                '-routes-cfg',
+                `/etc/nebula/bridges/${state.id}.yml`,
+            ],
+            restart: 'on-failure',
+            install: {
+                wantedBy: 'multi-user.target',
+            },
+        },
+        { ...opts, dependsOn: [ingress.id, egress.id, routesCfg.id] },
+    );
+});

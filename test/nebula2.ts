@@ -4,11 +4,11 @@ import { TEST_HOSTS } from './host';
 const network = await nebula.network(import.meta.resolve('./network.json'));
 
 on('*', (host) => {
-    const nginx = podman.container('nginx2', {
+    const nginx2 = podman.container('nginx2', {
         name: 'nginx2',
         image: 'docker.io/nginx:latest',
     });
-    nginx.connectNebula({
+    nginx2.connectNebula({
         network,
         hostname: `${host.id}.nginx2.nebula.test`,
         groups: ['nginx2'],
@@ -25,14 +25,12 @@ on('*', (host) => {
     location / {
         return 200 'healthy host ${host.id}';
     }
-}`
+}`;
 
     const nginx3 = podman.container('nginx3', {
         name: 'nginx3',
         image: 'docker.io/nginx:latest',
-        configFiles: [
-            ['/etc/nginx/conf.d/default.conf', config],
-        ]
+        configFiles: [['/etc/nginx/conf.d/default.conf', config]],
     });
     nginx3.connectNebula({
         network,

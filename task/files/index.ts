@@ -14,7 +14,7 @@ interface PutInputBase {
     remotePath: string;
 
     /**
-     * Mode for the remote file, e.g. '700'.
+     * Mode for the remote file, e.g. 0o700.
      */
     mode?: number;
 
@@ -40,9 +40,10 @@ interface UploadLocalFile extends PutInputBase {
 
 interface WriteData extends PutInputBase {
     /**
-     * Data to write to remote. If string, it is encoded as utf-8.
+     * Data to write to remote. If string, it is encoded as utf-8. If it is
+     * object, it is encoded as JSON that is encoded as utf-8.
      */
-    content: string | Uint8Array;
+    content: string | Uint8Array | object;
 
     localPath?: never;
 }
@@ -55,7 +56,7 @@ export const put: TaskType<PutInput, Output> = (id, input, opts) => {
     const hasher = new Bun.CryptoHasher('sha256');
     if (input.localPath) {
         hasher.update(fs.readFileSync(input.localPath)); // TODO make this async somehow
-    } else if (input.content) {
+    } else if (typeof input.content === 'string') {
         hasher.update(input.content);
     }
     const checksum = hasher.digest('hex');

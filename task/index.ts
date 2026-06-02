@@ -58,15 +58,24 @@ export type TaskType<S, O extends Output> = (
 export function taskType<S, O>(
     name: string,
     handler: string,
-    outputSource?: (id: string, state: S) => O,
+    outputSource?: (
+        id: string,
+        state: S,
+        opts: { after: string[]; onChanged: string[] },
+    ) => O,
 ): TaskType<S, O & { id: string }> {
     registerHandler(name, handler.replace('file://', '')); // Needed by loadHandlerCode and loadSteps etc.
     return (id, state, opts) => {
         const qualifiedId = builder.qualifyId(id);
-        builder.addTask(qualifiedId, name, state, opts ?? {});
+        const task = builder.addTask(qualifiedId, name, state, opts ?? {});
         return {
             id: qualifiedId,
-            ...(outputSource ? outputSource(qualifiedId, state) : {}),
+            ...(outputSource
+                ? outputSource(qualifiedId, state, {
+                      after: task.after,
+                      onChanged: task.onChanged,
+                  })
+                : {}),
         } as O & { id: string };
     };
 }

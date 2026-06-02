@@ -29,10 +29,13 @@ export const apply = [
         if (state.localPath) {
             data = await Bun.file(state.localPath).bytes();
         } else {
-            data =
-                typeof state.content === 'string'
-                    ? Buffer.from(state.content, 'utf-8')
-                    : state.content!;
+            if (typeof state.content === 'string') {
+                data = Buffer.from(state.content, 'utf-8');
+            } else if (state.content instanceof Uint8Array) {
+                data = state.content;
+            } else {
+                data = Buffer.from(JSON.stringify(state.content), 'utf-8');
+            }
         }
         return {
             data, // Pass data to next step that runs on remote

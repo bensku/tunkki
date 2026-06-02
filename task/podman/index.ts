@@ -13,28 +13,44 @@ interface ContainerOutput {
 export const container = taskType<ContainerState, ContainerOutput>(
     'podman.container',
     import.meta.resolve('./container'),
-    (id, state) => ({
+    (id, state, opts) => ({
         connectNebula: (endpoint) => {
-            // Make Podman call nebula-netavark
+            // Make Podman call nebula-netavark plugin
             if (typeof state.network === 'string') {
                 state.network = [state.network];
             } else if (!state.network) {
                 state.network = [];
             }
             if (state.network.includes('nebula')) {
-                throw new Error('currently, only one Nebula network per container is supported');
+                throw new Error(
+                    'currently, only one Nebula network per container is supported',
+                );
             }
             state.network.push('nebula');
 
+            // Ensure nebula-netavarkd is up before we start
+            if (typeof state.unit?.after === 'string') {
+                state.network = [state.unit.after, 'nebula-netavarkd.service'];
+            } else if (!state.unit?.after) {
+                if (state.unit) {
+                    state.unit.after = ['nebula-netavarkd.service'];
+                } else {
+                    state.unit = {
+                        after: ['nebula-netavarkd.service'],
+                    };
+                }
+            }
+
             // Add endpoint so that nebula-netavark knows what to do with us
-            nebula.endpoint(
-                `${id}-nebula`,
-                {
-                    id: state.name,
-                    ...endpoint,
-                },
-                { after: [id] },
-            );
+            const ep = nebula.endpoint(`${id}-nebula`, {
+                id: state.name,
+                ...endpoint,
+            });
+
+            // Make sure we're deployed BEFORE the container! Otherwise it won't start
+            opts.after.push(ep.id);
+
+            state.unit?.after;
         },
     }),
 );

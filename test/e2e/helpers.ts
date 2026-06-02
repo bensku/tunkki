@@ -7,6 +7,16 @@ const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const AGENT_BINARY = join(REPO_ROOT, 'tunkki');
 
 /**
+ * Nebula-related binaries live as SIBLINGS of the tunkki repo (one level above
+ * REPO_ROOT). The setup tasks (`nebula.setup`, `nebula.netavarkSetup`,
+ * `nebula.bridgedSetup`) read them through their `localPath`. Resolved from
+ * REPO_ROOT so they don't depend on the test runner's cwd.
+ */
+export const NEBULA_BIN_DIR = join(REPO_ROOT, '..', 'nebula'); // nebula, nebula-cert
+export const NETAVARK_BIN_DIR = join(REPO_ROOT, '..', 'nebula-netavark'); // nebula-netavarkd, nebula-netavark-plugin
+export const BRIDGED_BIN_DIR = join(REPO_ROOT, '..', 'bridged'); // bridged
+
+/**
  * VMs the E2E suite expects to find provisioned via Lima. Match the names in
  * test/test-vms.sh.
  */
@@ -163,6 +173,52 @@ async function checkAndPrep(): Promise<boolean> {
     return true;
 }
 
+/**
+ * Nebula E2E preconditions, layered on top of {@link vmsReady}:
+ *  - vmsReady() is satisfied (Lima up, agent uploaded),
+ *  - the five Nebula binaries exist locally — the setup tasks upload them to
+ *    the VMs,
+ *  - `nebula-cert` is on the LOCAL PATH — endpoint cert signing runs in a
+ *    `local` step as a bare `nebula-cert sign` (task/nebula/endpoint.ts).
+ *
+ * Memoized like {@link vmsReady}; warns and returns false (→ tests skip) when a
+ * precondition is unmet.
+ */
+let nebulaReadyPromise: Promise<boolean> | undefined;
+export function nebulaReady(): Promise<boolean> {
+    if (!nebulaReadyPromise) nebulaReadyPromise = checkNebula();
+    return nebulaReadyPromise;
+}
+
+async function checkNebula(): Promise<boolean> {
+    if (!(await vmsReady())) return false;
+    const required = [
+        join(NEBULA_BIN_DIR, 'nebula'),
+        join(NEBULA_BIN_DIR, 'nebula-cert'),
+        join(NETAVARK_BIN_DIR, 'nebula-netavarkd'),
+        join(NETAVARK_BIN_DIR, 'nebula-netavark-plugin'),
+        join(BRIDGED_BIN_DIR, 'bridged'),
+    ];
+    for (const f of required) {
+        if (!(await Bun.file(f).exists())) {
+            console.warn(`[nebula] missing local binary: ${f}`);
+            return false;
+        }
+    }
+    const haveCert = await Bun.spawn({
+        cmd: ['sh', '-c', 'command -v nebula-cert'],
+        stdout: 'ignore',
+        stderr: 'ignore',
+    }).exited;
+    if (haveCert !== 0) {
+        console.warn(
+            '[nebula] nebula-cert not on local PATH (needed for cert signing)',
+        );
+        return false;
+    }
+    return true;
+}
+
 /** A `Connector` that runs the agent on a Lima VM via `limactl shell sudo`. */
 export function vmConn(vm: TestVm) {
     return protocols.proxyCmd(
@@ -251,4 +307,115 @@ export function uniqueStack(prefix: string): string {
     return `${prefix}-${Date.now().toString(36)}-${Math.random()
         .toString(36)
         .slice(2, 6)}`;
+}
+
+/**
+ * Probe an HTTP endpoint over the Nebula overlay FROM a host (hosts have curl;
+ * the nginx image does not). Retries every 500ms until the response is 200 and
+ * — if `expectBody` is given — its body contains that substring, or the
+ * deadline passes. Returns the matching body.
+ *
+ * Overlay reachability needs lighthouse registration + a Nebula handshake after
+ * the daemons start, which is not synchronous with `systemctl is-active`, so a
+ * single shot is racy. `-g` lets curl accept a bracketed literal IPv6 host. We
+ * fetch the status code and the body in one shell line so an empty-body 200 is
+ * not mistaken for a connection failure.
+ */
+export async function httpGetOverNebula(
+    fromVm: TestVm,
+    ipv6: string,
+    opts: {
+        port?: number;
+        path?: string;
+        expectBody?: string;
+        timeoutMs?: number;
+    } = {},
+): Promise<string> {
+    const { port = 80, path = '/', expectBody, timeoutMs = 60_000 } = opts;
+    const url = `http://[${ipv6}]:${port}${path}`;
+    const deadline = Date.now() + timeoutMs;
+    let last = '';
+    while (Date.now() < deadline) {
+        const r = await vmExec(
+            fromVm,
+            `curl -g -s -o /dev/null -w '%{http_code}' --max-time 3 '${url}'; echo; curl -g -s --max-time 3 '${url}' || true`,
+        );
+        const nl = r.stdout.indexOf('\n');
+        const code = (nl >= 0 ? r.stdout.slice(0, nl) : r.stdout).trim();
+        const body = nl >= 0 ? r.stdout.slice(nl + 1) : '';
+        last = `code=${code} body=${body.trim().slice(0, 80)}`;
+        if (
+            code === '200' &&
+            (expectBody === undefined || body.includes(expectBody))
+        ) {
+            return body;
+        }
+        await Bun.sleep(500);
+    }
+    throw new Error(
+        `httpGetOverNebula(${fromVm} -> ${url}) never succeeded within ${timeoutMs}ms (last: ${last})`,
+    );
+}
+
+/**
+ * Probe an HTTP URL from INSIDE a container via `podman exec <container> wget`.
+ * When `url` uses a `*.nebula.test` hostname this exercises Nebula DNS
+ * resolution end-to-end (you can't fetch by name without resolving it first).
+ * Retries until the body matches `expectBody` (if given) or the deadline passes.
+ */
+export async function httpGetFromContainer(
+    vm: TestVm,
+    container: string,
+    url: string,
+    opts: { expectBody?: string; timeoutMs?: number } = {},
+): Promise<string> {
+    const { expectBody, timeoutMs = 60_000 } = opts;
+    const deadline = Date.now() + timeoutMs;
+    let last = '';
+    while (Date.now() < deadline) {
+        const r = await vmExec(
+            vm,
+            `podman exec ${container} wget -q -T 3 -O - '${url}'`,
+        );
+        const body = r.stdout;
+        last = `exit=${r.exitCode} body=${body.trim().slice(0, 80)}`;
+        if (
+            r.exitCode === 0 &&
+            (expectBody === undefined || body.includes(expectBody))
+        ) {
+            return body;
+        }
+        await Bun.sleep(500);
+    }
+    throw new Error(
+        `httpGetFromContainer(${vm}/${container} -> ${url}) never succeeded within ${timeoutMs}ms (last: ${last})`,
+    );
+}
+
+/**
+ * Best-effort workaround for a QEMU `socket`-netdev abort seen on
+ * `lima:user-v2` under inter-VM traffic:
+ *
+ *   qemu-system-x86_64: net/net.c: net_fill_rstate: Assertion `size == 0' failed.
+ *
+ * QEMU's socket netdev frames each packet with a 4-byte length prefix; a frame
+ * larger than its receive buffer (~64KiB) desyncs the framing and aborts the
+ * VM. Disabling receive coalescing (GRO) and capping GSO sizing on the guest
+ * virtio-net NIC keeps frames small.
+ *
+ * NOTE: on virtio_net most TX segmentation offloads are already `off [fixed]`,
+ * so the guest usually can't emit oversized frames itself — if the crash
+ * persists, the oversized frames originate in the host-side user-v2 stack and
+ * the real fix is a different VM network backend (e.g. socket_vmnet), not this.
+ */
+export async function relaxNicOffloads(vm: TestVm): Promise<void> {
+    await vmExec(
+        vm,
+        `for n in /sys/class/net/*; do
+            ifc=$(basename "$n")
+            [ "$(basename "$(readlink "$n/device/driver" 2>/dev/null)" 2>/dev/null)" = virtio_net ] || continue
+            ethtool -K "$ifc" gro off gso off tso off lro off sg off 2>/dev/null
+            ip link set dev "$ifc" gso_max_size 1500 gso_max_segs 1 2>/dev/null
+        done; true`,
+    );
 }
