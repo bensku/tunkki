@@ -69,9 +69,9 @@ on('*', (host) => {
                         `[${TARGET_IPS.test3}]:80`,
                     ],
                     type: 'first_healthy',
+                    timeout: '3s',
                     health: {
                         interval: '10s',
-                        timeout: '3s',
                         ok_threshold: 1,
                         fail_threshold: 1,
                         window: 2,

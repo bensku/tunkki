@@ -88,7 +88,7 @@ type SimpleFirewall = [
     string | 'any', // Group to allow or any for all groups
 ][];
 
-type Firewall = NebulaFirewall | SimpleFirewall;
+export type Firewall = NebulaFirewall | SimpleFirewall;
 
 export interface Endpoint {
     /**

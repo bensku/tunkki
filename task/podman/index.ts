@@ -6,7 +6,7 @@ import type { State as NetworkState } from './network';
 import type { State as PodState } from './pod';
 
 type ContainerEndpoint = Omit<nebulaUtil.Endpoint, 'id'>;
-interface ContainerOutput {
+export interface ContainerOutput {
     connectNebula: (config: ContainerEndpoint) => void;
 }
 
