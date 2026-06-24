@@ -112,7 +112,7 @@ interface EndpointOutput {
     service: () => Output;
 }
 
-export type Endpoint = nebula.Endpoint
+export type Endpoint = nebula.Endpoint;
 
 /**
  * Creates a Nebula endpoint, but does not by itself connect it to anything.
@@ -172,7 +172,7 @@ interface BridgeRoute {
             enabled: boolean;
             query_name?: string;
             query_type?: string;
-        }
+        };
     };
 }
 

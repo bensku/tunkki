@@ -1,5 +1,6 @@
 {
     "name": "@bensku/tunkki",
+    "version": "0.0.1",
     "module": "index.ts",
     "exports": {
         ".": "./index.ts",

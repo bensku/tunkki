@@ -42,31 +42,4 @@ on('*', (host) => {
     });
 });
 
-on('test1', () => {
-    const nginxEndpoint = nebula.endpoint('nginx-endpoint', {
-        network,
-        id: 'nginx',
-        hostname: `nginx1.nebula.test`,
-        groups: ['nginx'],
-        firewall: {
-            outbound: [],
-            inbound: [
-                {
-                    port: 'any',
-                    group: 'host',
-                },
-            ],
-        },
-    });
-    podman.container(
-        'nginx',
-        {
-            name: 'nginx',
-            image: 'docker.io/nginx:latest',
-            network: ['nebula'],
-        },
-        { after: [nginxEndpoint.id] },
-    );
-});
-
-deploy('nebula', TEST_HOSTS);
+deploy('nebula-hosts', TEST_HOSTS);

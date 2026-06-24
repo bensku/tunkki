@@ -40,6 +40,8 @@ export interface Network {
          */
         underlayAddr: string;
     }[];
+
+    unsafeRoutes?: UnsafeRoute[];
 }
 
 export interface CA {
@@ -54,9 +56,25 @@ export interface CA {
     cert: string;
 }
 
+export interface UnsafeRoute {
+    /**
+     * Prefix this route covers.
+     */
+    route: string;
+
+    /**
+     * VPN IPs of gateway endpoints the traffic should exit from.
+     * Note that host running gateway must have IP forward enabled.
+     * NAT is not required, but if you want to use it, that needs to be
+     * configured manually on gateway hosts.
+     */
+    via: string[];
+}
+
 interface FirewallRuleBase {
     port: number | 'any';
     proto?: 'tcp' | 'udp' | 'icmp' | 'any';
+    localCidr?: string;
 }
 
 interface FirewallGroupsRule extends FirewallRuleBase {
@@ -196,6 +214,7 @@ export async function toNebulaConfig(endpoint: Endpoint) {
             proto: rule.proto ?? 'any',
             group: rule.group,
             host: rule.host,
+            local_cidr: rule.localCidr,
         };
     };
 
@@ -236,6 +255,12 @@ export async function toNebulaConfig(endpoint: Endpoint) {
         logging: {
             level: endpoint.logLevel ?? 'info',
             format: 'json',
+        },
+        tun: {
+            unsafe_routes: endpoint.network.unsafeRoutes?.map((route) => ({
+                route: route.route,
+                via: route.via.map(via => ({ gateway: via })),
+            })),
         },
         // TODO stats, handshakes
         tunnels: {

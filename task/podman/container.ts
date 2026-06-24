@@ -156,6 +156,8 @@ export type State = {
      * part of a pod.
      */
     network?: string | string[];
+    ip?: string;
+    ip6?: string;
     /** `NetworkAlias=` — additional DNS aliases for the container on its networks. */
     networkAlias?: string | string[];
     /**
@@ -294,6 +296,8 @@ export function toContainerUnit(spec: State): systemd.UnitFile {
         HostName: spec.hostname,
 
         Network: spec.network,
+        IP: spec.ip,
+        IP6: spec.ip6,
         NetworkAlias: spec.networkAlias,
         PublishPort: podman.renderPublishPort(spec.publishPort),
         AddHost: podman.renderAddHost(spec.addHost),

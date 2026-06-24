@@ -15,12 +15,14 @@ interface ConfigureReq {
     dynamicPrefix: string;
     prefix: string;
     ip?: string;
+    unsafeRoutes: nebula.UnsafeRoute[];
 }
 
 interface SignCertReq {
     id: string;
     pubKey: string;
     networks: string[];
+    unsafeNetworks: string[];
 }
 
 interface InstallReq {
@@ -40,6 +42,7 @@ export const apply = [
                 dynamicPrefix: state.network.dynamicPrefix,
                 prefix: state.network.prefix,
                 ip: state.ip,
+                unsafeRoutes: state.network.unsafeRoutes ?? [],
             };
         },
     ),
@@ -72,6 +75,10 @@ export const apply = [
             id: state.id,
             pubKey,
             networks: [`${ip}/${prefixLen}`],
+            // Filter unsafe routes that this endpoint serves as gateway for
+            unsafeNetworks: state.unsafeRoutes
+                .filter((route) => route.via.includes(ip))
+                .map((route) => route.route),
         };
     }),
     step<SignCertReq, InstallReq, LocalData>(
@@ -87,7 +94,11 @@ export const apply = [
             // Mint a certificate from it
             const ca = localData.endpoint.network.signingCA;
             const crtPath = path.join(tmpDir, 'host.crt');
-            await $`nebula-cert sign -in-pub ${pubPath} -ca-crt ${ca.cert} -ca-key ${ca.key} -duration 676000h -name ${localData.endpoint.hostname} -groups ${localData.endpoint.groups.join(',')} -networks ${state.networks.join(',')} -out-crt ${crtPath}`;
+            if (state.unsafeNetworks) {
+                await $`nebula-cert sign -in-pub ${pubPath} -ca-crt ${ca.cert} -ca-key ${ca.key} -duration 676000h -name ${localData.endpoint.hostname} -groups ${localData.endpoint.groups.join(',')} -networks ${state.networks.join(',')} -unsafe-networks ${state.unsafeNetworks.join(',')} -out-crt ${crtPath}`;
+            } else {
+                await $`nebula-cert sign -in-pub ${pubPath} -ca-crt ${ca.cert} -ca-key ${ca.key} -duration 676000h -name ${localData.endpoint.hostname} -groups ${localData.endpoint.groups.join(',')} -networks ${state.networks.join(',')} -out-crt ${crtPath}`;
+            }
             const certificate = await Bun.file(crtPath).text();
 
             // Clean up

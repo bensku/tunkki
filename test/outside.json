@@ -1,0 +1,15 @@
+{
+    "prefix": "fd99:40c0:9ffa::/48",
+    "dynamicPrefix": "fd99:40c0:9ffa:8000::/49",
+    "signingCA": {
+        "cert": "cas/signing-2026-06-24.crt",
+        "key": "cas/signing-2026-06-24.key"
+    },
+    "trustedCAs": [
+        {
+            "cert": "cas/signing-2026-06-24.crt",
+            "key": "cas/signing-2026-06-24.key"
+        }
+    ],
+    "lighthouses": []
+}
