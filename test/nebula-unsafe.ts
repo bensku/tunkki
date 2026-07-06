@@ -53,7 +53,7 @@ on('*', (host) => {
                     proto: 'icmp',
                     host: 'any',
                     localCidr: '::/0',
-                }
+                },
             ],
             outbound: [],
         },

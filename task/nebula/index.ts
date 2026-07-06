@@ -20,7 +20,7 @@ export const setup = combine<SetupState, Output>((state, opts) => {
         'nebula',
         {
             localPath: path.join(state.localPath, 'nebula'),
-            remotePath: '/usr/local/bin/nebula',
+            remotePath: '/usr/bin/nebula',
             mode: 0o755,
         },
         opts,
@@ -29,7 +29,7 @@ export const setup = combine<SetupState, Output>((state, opts) => {
         'nebula-cert',
         {
             localPath: path.join(state.localPath, 'nebula-cert'),
-            remotePath: '/usr/local/bin/nebula-cert',
+            remotePath: '/usr/bin/nebula-cert',
             mode: 0o755,
         },
         { ...opts, after: [daemonFile.id] },
@@ -46,7 +46,7 @@ export const netavarkSetup = combine<SetupState, Output>((state, opts) => {
         'nebula-netavarkd',
         {
             localPath: path.join(state.localPath, 'nebula-netavarkd'),
-            remotePath: '/usr/local/bin/nebula-netavarkd',
+            remotePath: '/usrbin/nebula-netavarkd',
             mode: 0o755,
         },
         opts,
@@ -55,7 +55,7 @@ export const netavarkSetup = combine<SetupState, Output>((state, opts) => {
         'plugin',
         {
             localPath: path.join(state.localPath, 'nebula-netavark-plugin'),
-            remotePath: '/usr/local/lib/netavark/nebula',
+            remotePath: '/usr/lib/netavark/nebula',
             mode: 0o755,
         },
         opts,
@@ -67,7 +67,7 @@ export const netavarkSetup = combine<SetupState, Output>((state, opts) => {
         {
             name: 'nebula-netavarkd',
             type: 'notify',
-            exec: ['/usr/local/bin/nebula-netavarkd'],
+            exec: ['/usr/bin/nebula-netavarkd'],
             execReload: '/bin/kill -HUP $MAINPID',
             restart: 'on-failure',
             install: {
@@ -128,7 +128,7 @@ export const endpoint = taskType<nebula.Endpoint, EndpointOutput>(
                     name: `nebula-${state.id}`,
                     type: 'notify',
                     exec: [
-                        '/usr/local/bin/nebula',
+                        '/usr/bin/nebula',
                         '-config',
                         `/etc/containers/nebula/${state.id}.yml`,
                     ],

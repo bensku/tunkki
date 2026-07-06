@@ -64,6 +64,8 @@ export type State = {
     unit?: systemd.UnitSection;
     /** Customisations for the generated `[Install]` section (typically `wantedBy: ['timers.target']`). */
     install?: systemd.InstallSection;
+
+    script?: string;
 };
 
 export function toTimerUnit(spec: State): systemd.UnitFile {

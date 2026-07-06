@@ -29,8 +29,8 @@ export function proxyCmd(cmd: string[], uploadCmd?: string[]): Connector {
                 const proc = Bun.spawn({
                     cmd: uploadCmd.map((part) =>
                         part
-                            .replace('$LOCAL_PATH', localPath)
-                            .replace('$REMOTE_PATH', remotePath),
+                            .replaceAll('$LOCAL_PATH', localPath)
+                            .replaceAll('$REMOTE_PATH', remotePath),
                     ),
                 });
                 await proc.exited;
@@ -61,4 +61,12 @@ export function proxyCmd(cmd: string[], uploadCmd?: string[]): Connector {
     };
 }
 
-// TODO ssh etc.
+export function ssh(address: string): Connector {
+    return proxyCmd(['ssh', address, '/opt/tunkki/tunkki'], [
+        'sh',
+        '-c',
+        // ssh flattens its arguments into a single string for the remote
+        // shell to re-parse, so the remote command must be one quoted word
+        `ssh ${address} 'mkdir -p "$(dirname "$REMOTE_PATH")" && tee "$REMOTE_PATH" >/dev/null && chmod +x "$REMOTE_PATH"' < "$LOCAL_PATH"`,
+    ]);
+}

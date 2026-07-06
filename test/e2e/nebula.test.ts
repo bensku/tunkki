@@ -254,7 +254,7 @@ t(
             expect(
                 await vmFileExists(vm, '/etc/nebula/endpoints/host/host.key'),
             ).toBe(true);
-            expect(await vmFileExists(vm, '/usr/local/bin/nebula')).toBe(true);
+            expect(await vmFileExists(vm, '/usr/bin/nebula')).toBe(true);
             expect(
                 await vmFileExists(vm, '/usr/local/lib/netavark/nebula'),
             ).toBe(true);

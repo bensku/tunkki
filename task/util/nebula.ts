@@ -259,7 +259,7 @@ export async function toNebulaConfig(endpoint: Endpoint) {
         tun: {
             unsafe_routes: endpoint.network.unsafeRoutes?.map((route) => ({
                 route: route.route,
-                via: route.via.map(via => ({ gateway: via })),
+                via: route.via.map((via) => ({ gateway: via })),
             })),
         },
         // TODO stats, handshakes

@@ -69,7 +69,7 @@ export const apply = [
 
         // Make key pair, to be signed as certificate by local
         const pubkeyPath = `${endpointDir}/host.pub`;
-        await $`/usr/local/bin/nebula-cert keygen -out-key ${endpointDir}/host.key -out-pub ${pubkeyPath}`;
+        await $`/usr/bin/nebula-cert keygen -out-key ${endpointDir}/host.key -out-pub ${pubkeyPath}`;
         const pubKey = await Bun.file(pubkeyPath).text();
         return {
             id: state.id,
