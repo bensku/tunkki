@@ -42,6 +42,8 @@ export interface Network {
     }[];
 
     unsafeRoutes?: UnsafeRoute[];
+
+    dnsServers?: string[];
 }
 
 export interface CA {

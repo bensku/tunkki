@@ -30,7 +30,10 @@ export const container = taskType<ContainerState, ContainerOutput>(
 
             // Ensure nebula-netavarkd is up before we start
             if (typeof state.unit?.after === 'string') {
-                state.network = [state.unit.after, 'nebula-netavarkd.service'];
+                state.unit.after = [
+                    state.unit.after,
+                    'nebula-netavarkd.service',
+                ];
             } else if (!state.unit?.after) {
                 if (state.unit) {
                     state.unit.after = ['nebula-netavarkd.service'];
@@ -50,7 +53,9 @@ export const container = taskType<ContainerState, ContainerOutput>(
             // Make sure we're deployed BEFORE the container! Otherwise it won't start
             opts.after.push(ep.id);
 
-            state.unit?.after;
+            if (endpoint.network.dnsServers && !state.dns) {
+                state.dns = [...endpoint.network.dnsServers];
+            }
         },
     }),
 );

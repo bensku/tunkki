@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import { type Output, type TaskType, taskType } from '@bensku/tunkki/task';
+import type { State as DirState } from './directory';
 import type { State as PutState } from './put';
 
 const putImpl = taskType<PutState, Output>(
@@ -73,3 +74,8 @@ export const put: TaskType<PutInput, Output> = (id, input, opts) => {
         opts,
     );
 };
+
+export const directory = taskType<DirState, Output>(
+    'files.directory',
+    import.meta.resolve('./directory'),
+);

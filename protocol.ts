@@ -62,11 +62,14 @@ export function proxyCmd(cmd: string[], uploadCmd?: string[]): Connector {
 }
 
 export function ssh(address: string): Connector {
-    return proxyCmd(['ssh', address, '/opt/tunkki/tunkki'], [
-        'sh',
-        '-c',
-        // ssh flattens its arguments into a single string for the remote
-        // shell to re-parse, so the remote command must be one quoted word
-        `ssh ${address} 'mkdir -p "$(dirname "$REMOTE_PATH")" && tee "$REMOTE_PATH" >/dev/null && chmod +x "$REMOTE_PATH"' < "$LOCAL_PATH"`,
-    ]);
+    return proxyCmd(
+        ['ssh', address, '/opt/tunkki/tunkki'],
+        [
+            'sh',
+            '-c',
+            // ssh flattens its arguments into a single string for the remote
+            // shell to re-parse, so the remote command must be one quoted word
+            `ssh ${address} 'mkdir -p "$(dirname "$REMOTE_PATH")" && tee "$REMOTE_PATH" >/dev/null && chmod +x "$REMOTE_PATH"' < "$LOCAL_PATH"`,
+        ],
+    );
 }
