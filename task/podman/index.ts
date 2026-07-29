@@ -4,6 +4,7 @@ import type { nebula as nebulaUtil } from '@bensku/tunkki/task/util';
 import type { State as ContainerState } from './container';
 import type { State as NetworkState } from './network';
 import type { State as PodState } from './pod';
+import type { State as SecretState } from './secret';
 
 export type ContainerEndpoint = Omit<nebulaUtil.Endpoint, 'id'>;
 export interface ContainerOutput {
@@ -67,4 +68,16 @@ export const network = taskType<NetworkState, Output>(
 export const pod = taskType<PodState, Output>(
     'podman.pod',
     import.meta.resolve('./pod'),
+);
+
+export interface SecretOutput {
+    name: string;
+}
+
+export const secret = taskType<SecretState, SecretOutput>(
+    'podman.secret',
+    import.meta.resolve('./secret'),
+    (_id, state) => ({
+        name: state.name,
+    }),
 );

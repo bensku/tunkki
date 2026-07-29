@@ -91,6 +91,16 @@ export type ContainerHealth = {
     onFailure?: 'none' | 'kill' | 'restart' | 'stop';
 };
 
+export function renderSecret(
+    input: Record<string, string> | undefined,
+): string[] | undefined {
+    if (input === undefined) return undefined;
+    return Object.entries(input).map(
+        ([target, name]) =>
+            `${name},type=${target.startsWith('/') ? 'mount' : 'env'},target=${target}`,
+    );
+}
+
 /**
  * Specification for a Quadlet `.container` unit, describing a single Podman
  * container managed by systemd.
@@ -135,6 +145,11 @@ export type State = {
     environmentFile?: string | string[];
     /** `EnvironmentHost=` — if true, the host's environment is passed through to the container. */
     environmentHost?: boolean;
+
+    /**
+     * Podman secrets to mount.
+     */
+    secret?: Record<string, string>;
 
     /** `User=` — UID or username the container's main process runs as. */
     user?: string | number;
@@ -288,6 +303,7 @@ export function toContainerUnit(spec: State): systemd.UnitFile {
         Environment: spec.environment,
         EnvironmentFile: spec.environmentFile,
         EnvironmentHost: spec.environmentHost,
+        Secret: renderSecret(spec.secret),
 
         User: spec.user,
         Group: spec.group,

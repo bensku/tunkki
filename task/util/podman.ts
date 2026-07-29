@@ -79,22 +79,25 @@ export function renderPublishPort(
 }
 
 /** Structured `Volume=` entry. */
-export type VolumeEntry = {
-    /**
-     * Host path, named volume, or `.volume` Quadlet. Omit for an anonymous
-     * volume managed by Podman.
-     */
-    source?: string;
-    /** Mount target inside the container. */
-    target: string;
-    /** Mount options such as `ro`, `Z`, `rw`, `exec`. Joined with commas. */
-    options?: string[];
-};
+export type VolumeEntry =
+    | {
+          /**
+           * Host path, named volume, or `.volume` Quadlet. Omit for an anonymous
+           * volume managed by Podman.
+           */
+          source?: string;
+          /** Mount target inside the container. */
+          target: string;
+          /** Mount options such as `ro`, `Z`, `rw`, `exec`. Joined with commas. */
+          options?: string[];
+      }
+    | [string, string][];
 
 export type VolumeSpec = VolumeEntry[];
 
 function renderVolumeOne(v: string | VolumeEntry): string {
     if (typeof v === 'string') return v;
+    if (Array.isArray(v)) return v.join(':');
     const head = v.source !== undefined ? `${v.source}:${v.target}` : v.target;
     return v.options && v.options.length > 0
         ? `${head}:${v.options.join(',')}`
