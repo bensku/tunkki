@@ -76,9 +76,14 @@ export const apply = [
             pubKey,
             networks: [`${ip}/${prefixLen}`],
             // Filter unsafe routes that this endpoint serves as gateway for
-            unsafeNetworks: state.unsafeRoutes
-                .filter((route) => route.via.includes(ip))
-                .map((route) => route.route),
+            // Dedupe, there might be multiple instances of same route but with different via
+            unsafeNetworks: [
+                ...new Set(
+                    state.unsafeRoutes
+                        .filter((route) => route.via.includes(ip))
+                        .map((route) => route.route),
+                ),
+            ],
         };
     }),
     step<SignCertReq, InstallReq, LocalData>(

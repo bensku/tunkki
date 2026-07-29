@@ -71,6 +71,13 @@ export interface UnsafeRoute {
      * configured manually on gateway hosts.
      */
     via: string[];
+
+    /**
+     * By default, unsafe routes are only active if both the network and
+     * endpoints specify them. If this is true, the route is active for all
+     * endpoints.
+     */
+    default?: boolean;
 }
 
 interface FirewallRuleBase {
@@ -149,6 +156,11 @@ export interface Endpoint {
     groups: string[];
 
     firewall: Firewall;
+
+    /**
+     * Unsafe routes to activate for this endpoint.
+     */
+    unsafeRoutes?: UnsafeRoute[];
 
     logLevel?: string;
 }
@@ -259,10 +271,19 @@ export async function toNebulaConfig(endpoint: Endpoint) {
             format: 'json',
         },
         tun: {
-            unsafe_routes: endpoint.network.unsafeRoutes?.map((route) => ({
-                route: route.route,
-                via: route.via.map((via) => ({ gateway: via })),
-            })),
+            unsafe_routes: endpoint.network.unsafeRoutes
+                // Enable routes that are on by default or explicitly specified
+                ?.filter(
+                    (route) =>
+                        route.default ||
+                        endpoint.unsafeRoutes?.find(
+                            (r) => Bun.deepEquals(route, r), // via is important, there might be choices of routes to same destination!
+                        ),
+                )
+                .map((route) => ({
+                    route: route.route,
+                    via: route.via.map((via) => ({ gateway: via })),
+                })),
         },
         // TODO stats, handshakes
         tunnels: {
