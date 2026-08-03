@@ -146,7 +146,11 @@ export const apply = step('remote', async (state: State) => {
 });
 
 export const cleanup = async (state: State) => {
-    await Bun.file(`/etc/containers/systemd/${state.name}.network`).delete();
-    await $`systemctl daemon-reload`;
-    await $`systemctl stop ${state.name}-network`;
+    try {
+        await Bun.file(`/etc/containers/systemd/${state.name}.network`).delete();
+        await $`systemctl daemon-reload`;
+        await $`systemctl stop ${state.name}-network`;
+    } catch (_e) {
+        // Ignore for now
+    }
 };
