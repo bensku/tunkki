@@ -91,7 +91,7 @@ export type VolumeEntry =
           /** Mount options such as `ro`, `Z`, `rw`, `exec`. Joined with commas. */
           options?: string[];
       }
-    | [string, string][];
+    | [string, string];
 
 export type VolumeSpec = VolumeEntry[];
 
