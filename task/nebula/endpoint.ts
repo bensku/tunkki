@@ -11,7 +11,11 @@ interface LocalData {
 
 interface ConfigureReq {
     id: string;
-    config: string;
+    config: {
+        listen: {
+            host: string;
+        };
+    };
     dynamicPrefix: string;
     prefix: string;
     ip?: string;
@@ -38,7 +42,7 @@ export const apply = [
             const config = await nebula.toNebulaConfig(state);
             return {
                 id: state.id,
-                config: JSON.stringify(config),
+                config: config,
                 dynamicPrefix: state.network.dynamicPrefix,
                 prefix: state.network.prefix,
                 ip: state.ip,
@@ -47,9 +51,17 @@ export const apply = [
         },
     ),
     step<ConfigureReq, SignCertReq>('remote', async (state) => {
+        // Allow overriding of listen host
+        if (state.config.listen.host !== '::') {
+            const hostOverride = Bun.file('/etc/nebula/underlay_host.txt');
+            if (await hostOverride.exists()) {
+                state.config.listen.host = await hostOverride.text();
+            }
+        }
+
         // Drop config to disk
         await Bun.file(`/etc/containers/nebula/${state.id}.yml`).write(
-            state.config,
+            JSON.stringify(state.config),
         );
 
         // Assign random IP if we don't already have one
@@ -118,6 +130,7 @@ export const apply = [
         },
     ),
     step<InstallReq>('remote', async (state) => {
+        await Bun.sleep(3000); // to account for minor clock skew
         await Bun.file(`/etc/nebula/endpoints/${state.id}/host.crt`).write(
             state.certificate,
         );
