@@ -6,15 +6,16 @@ interface BaseSecret {
     source: string;
 }
 
-interface RandomString extends BaseSecret {
+export interface RandomString extends BaseSecret {
     source: 'random';
     format: 'hex' | 'base64';
     length: number;
 }
 
-interface ReadFromEnv extends BaseSecret {
+export interface ReadFromEnv extends BaseSecret {
     source: 'env';
     localEnv: string;
+    hash: string;
 }
 
 export type State = RandomString | ReadFromEnv;

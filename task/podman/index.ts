@@ -1,10 +1,10 @@
 import { nebula } from '@bensku/tunkki';
-import { type Output, taskType } from '@bensku/tunkki/task';
+import { type Output, type TaskType, taskType } from '@bensku/tunkki/task';
 import type { nebula as nebulaUtil } from '@bensku/tunkki/task/util';
 import type { State as ContainerState } from './container';
 import type { State as NetworkState } from './network';
 import type { State as PodState } from './pod';
-import type { State as SecretState } from './secret';
+import type { RandomString, ReadFromEnv, State as SecretState } from './secret';
 
 export type ContainerEndpoint = Omit<nebulaUtil.Endpoint, 'id'>;
 export interface ContainerOutput {
@@ -70,14 +70,37 @@ export const pod = taskType<PodState, Output>(
     import.meta.resolve('./pod'),
 );
 
-export interface SecretOutput {
+export type SecretInput = RandomString | Omit<ReadFromEnv, 'hash'>;
+
+export interface SecretOutput extends Output {
     name: string;
 }
 
-export const secret = taskType<SecretState, SecretOutput>(
+export const secret: TaskType<SecretInput, SecretOutput> = (id, input, opts) => {
+    // If input is local env variable, include its hash in state so redeploys update the value!
+    if (input.source === 'env') {
+        const secretValue = process.env[input.localEnv as string];
+        if (!secretValue) {
+            throw new Error(`missing secret localEnv ${input.localEnv}`);
+        }
+        return secretInternal(
+            id,
+            {
+                ...input,
+                hash: Bun.CryptoHasher.hash('sha256', secretValue).toBase64(),
+            },
+            opts,
+        );
+    } else {
+        return secretInternal(id, input, opts);
+    }
+};
+
+const secretInternal = taskType<SecretState, SecretOutput>(
     'podman.secret',
     import.meta.resolve('./secret'),
-    (_id, state) => ({
+    (id, state) => ({
+        id: id,
         name: state.name,
     }),
 );
