@@ -76,7 +76,11 @@ export interface SecretOutput extends Output {
     name: string;
 }
 
-export const secret: TaskType<SecretInput, SecretOutput> = (id, input, opts) => {
+export const secret: TaskType<SecretInput, SecretOutput> = (
+    id,
+    input,
+    opts,
+) => {
     // If input is local env variable, include its hash in state so redeploys update the value!
     if (input.source === 'env') {
         const secretValue = process.env[input.localEnv as string];

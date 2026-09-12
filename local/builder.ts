@@ -88,15 +88,35 @@ export function qualifyId(id: string) {
 }
 
 export async function loadTasks(hosts: Host[]) {
+    log.info(
+        'loading task sources',
+        'sources',
+        taskSources.length,
+        'hosts',
+        hosts.length,
+    );
     // Sources are run sequentially because enterHost/exitHost mutate global
     // state — two sources racing on the same host would collide.
-    for (const src of taskSources) {
+    for (const [sourceIndex, src] of taskSources.entries()) {
+        const source = `${sourceIndex + 1}/${taskSources.length}`;
+        log.info('loading task source', source);
         let prev: Task | undefined;
         for (const host of hosts) {
+            const taskCount = tasks.length;
+            log.info('loading task source', source, 'host', host.id);
             prev = await src(host, prev);
+            log.debug(
+                'loaded task source',
+                source,
+                'host',
+                host.id,
+                'tasksAdded',
+                tasks.length - taskCount,
+            );
         }
+        log.info('loaded task source', source);
     }
-    log.debug('loaded tasks', 'count', tasks.length);
+    log.info('validating tasks', 'count', tasks.length);
     validateTasks(tasks);
-    log.debug('validated tasks successfully');
+    log.info('validated tasks successfully');
 }

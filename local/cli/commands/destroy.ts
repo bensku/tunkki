@@ -2,6 +2,7 @@ import type { Event, Result } from '../../..';
 import { connect } from '../../..';
 import { makeColor } from '../colors';
 import {
+    connectionProgress,
     err,
     liveProgress,
     printJson,
@@ -26,7 +27,9 @@ export async function run(ctx: CliContext): Promise<number> {
 
     // For destroy, every host's task map is "empty" — pool.plan(stack, true)
     // sends [] as tasks, so the runner reports every existing task as deleted.
-    const pool = await connect(ctx.hosts);
+    const pool = await connect(ctx.hosts, (event) =>
+        connectionProgress(event, flags),
+    );
     const tasksByHost = buildTasksByHost(ctx.hosts);
     const showInternal = flags.logLevel <= 1;
     const noopIds = new Set<string>();

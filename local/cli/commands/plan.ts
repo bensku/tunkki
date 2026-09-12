@@ -1,7 +1,7 @@
 import { connect, type Host } from '../../..';
 import * as builder from '../../builder';
 import type { Task } from '../../task';
-import { err, printJson, printPlan } from '../output';
+import { connectionProgress, err, printJson, printPlan } from '../output';
 import type { ParsedCli } from '../parse';
 
 export interface CliContext {
@@ -37,7 +37,9 @@ export async function run(ctx: CliContext): Promise<number> {
             }
         }
     }
-    const pool = await connect(ctx.hosts);
+    const pool = await connect(ctx.hosts, (event) =>
+        connectionProgress(event, ctx.cli.flags),
+    );
     try {
         const plans = await pool.plan(
             ctx.stack,

@@ -1,4 +1,4 @@
-import type { Result } from '../..';
+import type { ConnectionEvent, Result } from '../..';
 import type { Event, Plan } from '../runner';
 import type { Task } from '../task';
 import { type Colorizer, makeColor } from './colors';
@@ -152,6 +152,30 @@ export function liveProgress(event: Event, opts: OutputOptions): void {
         line += ` ${c.red(event.error)}`;
     }
     out(line);
+}
+
+export function connectionProgress(
+    event: ConnectionEvent,
+    opts: Pick<OutputOptions, 'json' | 'quiet' | 'color'>,
+): void {
+    if (opts.quiet || opts.json) return;
+    const c = makeColor(opts.color);
+    if (event.type === 'ready') {
+        out(`${c.green('✓')} All hosts connected`);
+        return;
+    }
+    const tag = c.dim(`[${event.host.id}]`);
+    if (event.type === 'started') {
+        out(`${tag} ${c.dim('→')} connecting`);
+    } else if (event.status === 'done') {
+        out(`${tag} ${c.green('✓')} connected`);
+    } else {
+        const message =
+            event.error instanceof Error
+                ? event.error.message
+                : stringify(event.error);
+        out(`${tag} ${c.red('✗')} connection failed: ${message}`);
+    }
 }
 
 export function printSummary(results: Result[], opts: OutputOptions): void {

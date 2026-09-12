@@ -20,7 +20,9 @@ export async function plan(
     tasks: Task[],
     reapply: boolean,
 ): Promise<Plan> {
+    log.info('planning host', conn.host.id, 'tasks', tasks.length);
     // Configure the remote
+    log.debug('sending settings', 'host', conn.host.id, 'stack', stack);
     await conn.send({
         type: 'settings',
         stack,
@@ -29,7 +31,22 @@ export async function plan(
     });
 
     // Upload task handlers that will be needed to remote
+    log.info('loading task handlers', 'host', conn.host.id);
     const handlers = await loadHandlerCode(tasks);
+    log.info(
+        'task handlers loaded',
+        'host',
+        conn.host.id,
+        'handlers',
+        Object.keys(handlers).length,
+    );
+    log.debug(
+        'sending task handlers',
+        'host',
+        conn.host.id,
+        'handlers',
+        Object.keys(handlers),
+    );
     await conn.send({
         type: 'uploadHandlers',
         handlers,
@@ -84,6 +101,7 @@ export async function plan(
     })();
 
     // Send tasks to remote
+    log.info('sending tasks', 'host', conn.host.id, 'tasks', tasks.length);
     for (const task of tasks) {
         await conn.send({
             type: 'task',
@@ -96,12 +114,20 @@ export async function plan(
     await conn.send({
         type: 'tasksSent',
     });
+    log.info(
+        'tasks sent; waiting for remote plan',
+        'host',
+        conn.host.id,
+        'tasks',
+        tasks.length,
+    );
 
     // Patch onChangeds to plan. Iterate to a fixed point so transitive
     // promotion works: if B has onChanged=[A] and is promoted because A
     // moved, then C with onChanged=[B] must also be promoted in a subsequent
     // pass (B is no longer "unchanged" from C's perspective).
     const plan = await planPromise;
+    log.info('remote plan ready', 'host', conn.host.id);
     const unchanged = new Set(plan.unchanged);
     let progress = true;
     while (progress) {

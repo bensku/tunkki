@@ -1,6 +1,7 @@
 import { type Step, step } from '@bensku/tunkki/task';
 import type { Host } from '..';
-import type { TagSet, TaskHandler } from '../common/task';
+import { log } from '../common/log';
+import type { TaskHandler } from '../common/task';
 
 export interface Task {
     /**
@@ -71,8 +72,22 @@ export async function loadHandlerCode(
             if (!handler) {
                 throw new Error(`missing task handler: ${task.type}`);
             }
+            log.debug(
+                'loading task handler code',
+                'type',
+                task.type,
+                'file',
+                `${handler}.ts`,
+            );
             const file = await Bun.file(`${handler}.ts`).text();
             code[task.type] = file;
+            log.debug(
+                'loaded task handler code',
+                'type',
+                task.type,
+                'bytes',
+                file.length,
+            );
         }
     }
     return code;

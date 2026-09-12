@@ -6,7 +6,7 @@ import { Connection } from './local/connection';
 import * as runner from './local/runner';
 import { newTaskScheduler } from './local/scheduler';
 import type { Task } from './local/task';
-import type { Connector } from './protocol';
+import type { Connector, Connection as ProtocolConnection } from './protocol';
 
 export * as protocols from './protocol';
 export * as files from './task/files';
@@ -98,10 +98,49 @@ export interface Host {
     tags?: TagSet;
 }
 
-export async function connect(hosts: Host[]): Promise<TargetPool> {
+export type ConnectionEvent =
+    | {
+          type: 'ready';
+      }
+    | {
+          host: Host;
+          type: 'started';
+      }
+    | {
+          host: Host;
+          type: 'completed';
+          status: 'done';
+      }
+    | {
+          host: Host;
+          type: 'completed';
+          status: 'error';
+          error: unknown;
+      };
+
+export async function connect(
+    hosts: Host[],
+    callback?: (event: ConnectionEvent) => void,
+): Promise<TargetPool> {
     // Attempt to connect to hosts
     const attempts = await Promise.allSettled(
-        hosts.map((host) => host.conn.connect()),
+        hosts.map(async (host) => {
+            callback?.({ host, type: 'started' });
+            let conn: ProtocolConnection;
+            try {
+                conn = await host.conn.connect();
+            } catch (error) {
+                callback?.({
+                    host,
+                    type: 'completed',
+                    status: 'error',
+                    error,
+                });
+                throw error;
+            }
+            callback?.({ host, type: 'completed', status: 'done' });
+            return conn;
+        }),
     );
     const failures = attempts
         .filter((conn) => conn.status === 'rejected')
@@ -116,10 +155,13 @@ export async function connect(hosts: Host[]): Promise<TargetPool> {
         }
         throw new AggregateError(failures, 'connecting to hosts failed');
     }
+    callback?.({ type: 'ready' });
     // biome-ignore lint/style/noNonNullAssertion: there are no failures, indices in successes are same as indices in hosts
     const conns = successes.map((conn, i) => new Connection(conn, hosts[i]!));
 
+    log.info('loading deployment tasks', 'hosts', hosts.length);
     await builder.loadTasks(hosts);
+    log.info('deployment tasks ready', 'tasks', builder.tasks.length);
     return new TargetPool(conns, builder.tasks);
 }
 
@@ -173,7 +215,16 @@ export class TargetPool {
             throw new Error('already planned');
         }
         this.#stage = 1;
-        return await Promise.all(
+        log.info(
+            'starting plan',
+            'stack',
+            stack,
+            'mode',
+            mode,
+            'hosts',
+            this.#conns.length,
+        );
+        const plans = await Promise.all(
             this.#conns.map((conn) =>
                 runner.plan(
                     stack,
@@ -187,6 +238,8 @@ export class TargetPool {
                 ),
             ),
         );
+        log.info('planning complete', 'hosts', plans.length);
+        return plans;
     }
 
     async execute(

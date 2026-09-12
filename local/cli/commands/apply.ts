@@ -1,6 +1,7 @@
 import type { Event, Result } from '../../..';
 import { connect } from '../../..';
 import {
+    connectionProgress,
     err,
     liveProgress,
     printJson,
@@ -21,7 +22,9 @@ export async function run(ctx: CliContext): Promise<number> {
         return 2;
     }
 
-    const pool = await connect(ctx.hosts);
+    const pool = await connect(ctx.hosts, (event) =>
+        connectionProgress(event, flags),
+    );
     const tasksByHost = buildTasksByHost(ctx.hosts);
     const showInternal = flags.logLevel <= 1;
     const noopIds = new Set<string>();
