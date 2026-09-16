@@ -133,7 +133,12 @@ export const endpoint = taskType<nebula.Endpoint, EndpointOutput>(
                         `/etc/containers/nebula/${state.id}.yml`,
                     ],
                     execReload: '/bin/kill -HUP $MAINPID',
-                    restart: 'on-failure',
+                    restart: 'always',
+                    restartSec: '5s',
+                    unit: {
+                        // Keep retrying while the listening NICs become available.
+                        startLimitIntervalSec: 0,
+                    },
                     install: {
                         wantedBy: 'multi-user.target',
                     },
