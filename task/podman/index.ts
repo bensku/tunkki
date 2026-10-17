@@ -53,10 +53,6 @@ export const container = taskType<ContainerState, ContainerOutput>(
 
             // Make sure we're deployed BEFORE the container! Otherwise it won't start
             opts.after.push(ep.id);
-
-            if (endpoint.network.dnsServers && !state.dns) {
-                state.dns = [...endpoint.network.dnsServers];
-            }
         },
     }),
 );

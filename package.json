@@ -7,9 +7,6 @@
         "./task": "./task/index.ts",
         "./task/util": "./task/util/index.ts"
     },
-    "bin": {
-        "tunkki-nebula": "./nebula-cli.ts"
-    },
     "files": [
         "index.ts",
         "nebula-cli.ts",

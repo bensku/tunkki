@@ -36,5 +36,5 @@ export const apply = step<State>('remote', async (state) => {
         await $`chgrp ${state.group} ${state.path}`;
     }
     // Set desired permissions now that ownership is correct
-    $`chmod ${state.mode ?? '700'} ${state.path}`;
+    await $`chmod ${state.mode ?? '700'} ${state.path}`;
 });
