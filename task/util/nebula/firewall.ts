@@ -7,14 +7,22 @@ interface FirewallRuleBase {
 interface FirewallGroupsRule extends FirewallRuleBase {
     group: string;
     host?: never;
+    cidr?: never;
 }
 
 interface FirewallHostRule extends FirewallRuleBase {
     host: string | 'any';
     group?: never;
+    cidr?: never;
 }
 
-export type FirewallRule = FirewallGroupsRule | FirewallHostRule;
+interface FirewallCidrRule extends FirewallRuleBase {
+    cidr: string;
+    host?: never;
+    group?: never;
+}
+
+export type FirewallRule = FirewallGroupsRule | FirewallHostRule | FirewallCidrRule;
 
 /**
  * Firewall declarations is close-to-Nebula format.
@@ -42,5 +50,6 @@ export function formatFirewallRule(rule: FirewallRule) {
         group: rule.group,
         host: rule.host,
         local_cidr: rule.localCidr,
+        cidr: rule.cidr,
     };
 }

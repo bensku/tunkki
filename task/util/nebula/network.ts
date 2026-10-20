@@ -66,6 +66,16 @@ export interface Network {
      */
     underlay?: {
         host?: string;
+
+        /**
+         * Addresses that we advertise to lighthouses.
+         */
+        localAllowList?: Record<string, boolean>;
+
+        /**
+         * Addresses we'll agree to connect to.
+         */
+        remoteAllowList?: Record<string, boolean>;
     };
 }
 
@@ -178,6 +188,8 @@ export async function networkToConfig(network: Network) {
         lighthouse: {
             // Actual lighthouses will override this with empty array + lighthouse-specific config
             hosts: network.lighthouses.map((lh) => lh.vpnIp),
+            local_allow_list: network.underlay?.localAllowList,
+            remote_allow_list: network.underlay?.remoteAllowList,
         },
         cipher: 'aes',
         named_routes: routes, // "conveniently" the syntax is same (this is also nebula-netavark patch)
