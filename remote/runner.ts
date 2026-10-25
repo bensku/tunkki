@@ -137,31 +137,40 @@ export class Runner {
                     });
                 } else {
                     // Some changes needed, track a task...
-                    const handler: TaskHandler =
-                        event.taskType === '$noop'
-                            ? {
-                                  // Special case: execute no handler at all, actually
-                                  apply: {
-                                      location: 'remote',
-                                      handler: async () => undefined,
-                                  },
-                              }
-                            : await import(
-                                  `${this.#handlerDir}/${event.taskType}.ts`
-                              );
-                    this.#tasks.set(event.id, {
-                        type: event.taskType,
-                        handler,
-                        state: event.state,
-                        // If task type changed, we need to cleanup it before updating with new state
-                        recreateWith:
-                            oldState?.handler &&
-                            oldState.handler !== event.taskType
-                                ? await import(
-                                      `${this.#handlerDir}/${oldState.handler}.ts`
-                                  )
-                                : undefined,
-                    });
+                    try {
+                        const handler: TaskHandler =
+                            event.taskType === '$noop'
+                                ? {
+                                      // Special case: execute no handler at all, actually
+                                      apply: {
+                                          location: 'remote',
+                                          handler: async () => undefined,
+                                      },
+                                  }
+                                : await import(
+                                      `${this.#handlerDir}/${event.taskType}.ts`
+                                  );
+                        this.#tasks.set(event.id, {
+                            type: event.taskType,
+                            handler,
+                            state: event.state,
+                            // If task type changed, we need to cleanup it before updating with new state
+                            recreateWith:
+                                oldState?.handler &&
+                                oldState.handler !== event.taskType
+                                    ? await import(
+                                          `${this.#handlerDir}/${oldState.handler}.ts`
+                                      )
+                                    : undefined,
+                        });
+                    } catch (e) {
+                        // Oh no, failed to load task!
+                        reply({
+                            type: 'fatal',
+                            error: Bun.inspect(e),
+                        })
+                        return;
+                    }
                     // Let local side know about changes
                     reply({
                         type: 'status',
