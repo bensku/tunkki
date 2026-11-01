@@ -22,7 +22,10 @@ interface FirewallCidrRule extends FirewallRuleBase {
     group?: never;
 }
 
-export type FirewallRule = FirewallGroupsRule | FirewallHostRule | FirewallCidrRule;
+export type FirewallRule =
+    | FirewallGroupsRule
+    | FirewallHostRule
+    | FirewallCidrRule;
 
 /**
  * Firewall declarations is close-to-Nebula format.

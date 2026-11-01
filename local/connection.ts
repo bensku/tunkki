@@ -70,4 +70,12 @@ export class Connection {
             });
         }
     }
+
+    async receiveOne(): Promise<Event> {
+        const next = await this.listen().next();
+        if (next.done) {
+            throw new Error('connection closed');
+        }
+        return next.value;
+    }
 }

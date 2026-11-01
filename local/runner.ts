@@ -229,7 +229,7 @@ export async function newExecutor(
                                 type: 'completed',
                                 taskId: event.id,
                                 status: 'error',
-                                error: event.result as string,
+                                error: event.output as string,
                             };
                             break;
                         case 'skipped':
@@ -257,7 +257,7 @@ export async function newExecutor(
                                     steps,
                                     task,
                                     nextStep,
-                                    event.result,
+                                    event.output,
                                 );
                             }
                             break;
@@ -344,7 +344,7 @@ async function runStep(
                 type: 'done',
                 id: task.id,
                 status,
-                result: error ? error : result,
+                output: error ? error : result,
             });
 
             if (stepIdx === taskSteps.length - 1) {
@@ -353,7 +353,7 @@ async function runStep(
                     type: 'done',
                     id: task.id,
                     status,
-                    result: undefined,
+                    output: result,
                 });
             }
         })();

@@ -1,3 +1,6 @@
+import { type Event, writeEvent } from '../common/event';
+import { log } from '../common/log';
+
 export class Semaphore {
     #permits: number;
     #queue: Array<() => void> = [];
@@ -24,4 +27,9 @@ export class Semaphore {
             }
         };
     }
+}
+
+export function reply(event: Event) {
+    log.debug('remote->local', 'event', event);
+    process.send!(writeEvent(event));
 }

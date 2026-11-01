@@ -97,7 +97,7 @@ describe('binary protocol round-trip', () => {
                 type: 'status',
                 id: 'web.frontend',
                 status,
-                oldState: status === 'created' ? undefined : { name: 'old' },
+                oldInputs: status === 'created' ? undefined : { name: 'old' },
             };
             expect(await roundTrip(ev)).toEqual(ev);
         }
@@ -124,7 +124,7 @@ describe('binary protocol round-trip', () => {
                 type: 'done',
                 id: 'x',
                 status,
-                result: status === 'error' ? 'boom' : { ok: true },
+                output: status === 'error' ? 'boom' : { ok: true },
             };
             expect(await roundTrip(ev)).toEqual(ev);
         }

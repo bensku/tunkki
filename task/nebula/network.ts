@@ -10,8 +10,8 @@ export const apply = [
     step<nebula.Network, ConfigureReq>('local', async (state) => {
         return {
             id: state.id,
-            config: await nebula.networkToConfig(state)
-        }
+            config: await nebula.networkToConfig(state),
+        };
     }),
     step<ConfigureReq>('remote', async (state) => {
         await Bun.write(

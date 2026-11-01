@@ -168,7 +168,7 @@ export class Runner {
                         reply({
                             type: 'fatal',
                             error: Bun.inspect(e),
-                        })
+                        });
                         return;
                     }
                     // Let local side know about changes
@@ -363,9 +363,4 @@ interface Task {
 interface TaskState {
     handler: string;
     state: unknown;
-}
-
-function reply(event: Event) {
-    log.debug('remote->local', 'event', event);
-    process.send!(writeEvent(event));
 }

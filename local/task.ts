@@ -26,15 +26,9 @@ export interface Task {
     type: string;
 
     /**
-     * This task must be executed after these tasks.
+     * This task must be reapplied if any of these tasks have changed.
      */
-    after: string[];
-
-    /**
-     * This task must be executed these tasks were changed, even if its own
-     * state did not change at all.
-     */
-    onChanged?: string[];
+    deps?: string[];
 
     /**
      * Data that is passed to all local steps.

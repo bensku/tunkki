@@ -1,10 +1,11 @@
 import { deserialize, serialize } from 'bun:jsc';
+import type { ChangeSet } from '../remote/plan';
 
 interface BaseEvent {
     type: string;
 }
 
-export const CURRENT_PROTOCOL = 0;
+export const CURRENT_PROTOCOL = 1;
 
 /**
  * Remote->local.
@@ -17,120 +18,107 @@ interface Hello extends BaseEvent {
      * Local can reject
      */
     protocol: number;
-}
 
-/**
- * Local->remote.
- */
-interface Settings extends BaseEvent {
-    type: 'settings';
-    stack: string;
-    concurrency: number;
+    /**
+     * Remote log level.
+     */
     logLevel: number;
 }
 
 /**
- * Local->remote. Handler code package for remote to use.
+ * Local->remote. Request change set from remote
  */
-interface UploadHandlers extends BaseEvent {
-    type: 'uploadHandlers';
+interface Plan extends BaseEvent {
+    type: 'plan';
 
     /**
-     * Handler names (e.g. podman/pod) mapped to base64-encoded
-     * TS file contents (e.g. podman/pod.ts content).
+     * States of tasks from local.
+     */
+    incoming: Record<string, object>;
+}
+
+/**
+ * Remote->local. Change set for planning.
+ */
+interface PlanResult extends BaseEvent {
+    type: 'planResult';
+
+    /**
+     * Change set, as seen by sending remote.
+     */
+    changeSet: ChangeSet;
+
+    /**
+     * Entire old state from remote.
+     */
+    oldInputs: Record<string, unknown>;
+
+    oldOutputs: Record<string, unknown>;
+}
+
+interface BaseApplyEvent extends BaseEvent {
+    /**
+     * Apply session id.
+     */
+    session: string;
+}
+
+/**
+ * Local->remote. Opens a new apply session with given settings.
+ */
+interface OpenSession extends BaseApplyEvent {
+    type: 'openSession';
+
+    /**
+     * Stack id. This affects state directory.
+     */
+    stack: string;
+
+    /**
+     * Number of tasks that can be applied concurrently.
+     */
+    concurrency: number;
+}
+
+/**
+ * Local->remote. Instruct remote to load specified handlers.
+ */
+interface LoadHandlers extends BaseApplyEvent {
+    type: 'loadHandlers';
+
+    /**
+     * Handler names (e.g. podman/pod) mapped to TS script
+     * (e.g. podman/pod.ts content).
      */
     handlers: Record<string, string>;
 }
 
 /**
- * Remote->local. Fatal error when e.g. trying to load handlers.
+ * Remote->local. Remote is ready to run tasks.
  */
-interface FatalError extends BaseEvent {
-    type: 'fatal';
-
-    error: string;
-}
-
-/**
- * Local->remote. Task and its state for remote to compare against previous
- * state. Remote will reply with Status.
- */
-interface Task extends BaseEvent {
-    type: 'task';
-
-    /**
-     * Unique task id.
-     */
-    id: string;
-
-    /**
-     * Task type. A handler for this must have been previously uploaded.
-     */
-    taskType: string;
-
-    /**
-     * State for first step of the task. This is compared to previous state on
-     * remote to figure out if the task needs to be executed.
-     */
-    state: unknown;
-
-    /**
-     * If set to true, assume changed even if state did not actually change.
-     * This may be useful if host's reality diverges from state file.
-     */
-    reapply?: boolean;
-}
-
-/**
- * Local->remote. Indicator that all tasks have been sent. The remote will reply
- * with Status events for tasks that would be deleted.
- */
-interface TasksSent extends BaseEvent {
-    type: 'tasksSent';
-}
-
-/**
- * Remote->local. Task status in plan. Local uses this information to presents
- * diff to user and, if approved, to send appropriate Run events.
- */
-interface Status extends BaseEvent {
-    type: 'status';
-
-    /**
-     * Task id, in reference to previous task event.
-     */
-    id: string;
-
-    /**
-     * What would executing the task cause?
-     */
-    status: 'created' | 'updated' | 'deleted' | 'unchanged';
-
-    /**
-     * Old state for client-side diff generation.
-     * Only present if status is update or delete.
-     */
-    oldState: unknown;
-}
-
-/**
- * Remote->local. Remote is ready with plan phase. Local can now present the
- * diff to user and, if desired, begin sending Run events.
- */
-interface Ready extends BaseEvent {
+interface Ready extends BaseApplyEvent {
     type: 'ready';
+
+    /**
+     * Error if something failed while loading handlers or other setup.
+     */
+    error?: string;
 }
 
 /**
- * Local->remote. Order to execute a step in a task. Remote will take care
- * of respecting dependencies described in Task events. Remote will reply
- * with Done once the task has been completed (successfully or not).
+ * Local->remote. Order to execute a step in a task. Remote will reply with
+ * Done once task has been executed (successfully or not).
  */
-interface Run extends BaseEvent {
+interface Run extends BaseApplyEvent {
     type: 'run';
 
     /**
-     * Reference to task that was hopefully sent earlier.
+     * Task type id.
+     */
+    task: string;
+
+    /**
+     * Id of THIS task instance.
      */
     id: string;
 
@@ -140,20 +128,35 @@ interface Run extends BaseEvent {
     step: number;
 
     /**
-     * State to pass to the step. If this is step 0,
-     * this should be undefined; the remote will fetch the effective state
-     * from its own cache.
-     *
-     * If the effective state is undefined, the task is cleaned up. otheriwse,
-     * it is applied.
+     * State to pass to the step. If undefined, the task is cleaned up.
+     * Otherwise, it is applied.
      */
     state: unknown;
+
+    /**
+     * Before doing anything with state, recursively substitute values that
+     * are also keys in this record, with their corresponding values from this
+     * record. For example:
+     *
+     * state: { a: 123, b: "foo" }
+     * subs: { foo: { test: 1} }
+     *
+     * would become:
+     * state: { a 123, b: { test: 1 } }
+     */
+    replacements: Record<string, unknown>;
+
+    /**
+     * If true, this will always be applied. Manual dependsOn can cause this.
+     */
+    force: boolean;
 }
 
 /**
  * Remote->local. Remote has completed a task step.
+ * Local->remote. Local has completed the LAST step of a task.
  */
-interface Done extends BaseEvent {
+interface Done extends BaseApplyEvent {
     type: 'done';
 
     /**
@@ -165,7 +168,8 @@ interface Done extends BaseEvent {
      * How did the task step complete.
      * done: step was executed
      * error: error was thrown during step execution
-     * skipped: a dependency error prevented execution of this task (only for step 0)
+     * unchanged: inputs might've had changed, but actually didn't,
+     * hence nothing was executed
      */
     status: StepStatus;
 
@@ -173,26 +177,27 @@ interface Done extends BaseEvent {
      * Step result. If there are more steps, this is passed as state to the
      * next one.
      */
-    result: unknown;
+    output: unknown;
 }
 
-interface Reset extends BaseEvent {
-    type: 'reset';
+interface CloseSession extends BaseApplyEvent {
+    type: 'closeSession';
 }
 
-export type Event =
-    | Hello
-    | Settings
-    | UploadHandlers
-    | FatalError
-    | Task
-    | TasksSent
-    | Status
+/**
+ * Apply-phase event (i.e. has a session, WRITES changes to remote).
+ */
+export type ApplyEvent =
+    | OpenSession
+    | LoadHandlers
     | Ready
     | Run
     | Done
-    | Reset;
-export type StepStatus = 'started' | 'done' | 'error' | 'skipped';
+    | CloseSession;
+
+export type Event = Hello | Plan | PlanResult | ApplyEvent;
+
+export type StepStatus = 'started' | 'done' | 'error' | 'unchanged';
 
 export async function* readEvents(
     stream: ReadableStream<Uint8Array>,
