@@ -1,30 +1,93 @@
 # Deployment pipeline
 Here, 'local' means the tunkki CLI running on machine doing the deployment.
-Hosts that are deployed to run 'remote's.
+Hosts that are deployed to run 'remote's: the tunkki agent at
+`/opt/tunkki/tunkki`.
+
+Remotes are thin. They store state and execute steps they are told to. Local
+does all planning, ordering and comparison.
+
+## Connect
+Local connects to the agent on every host. The agent says `hello` with its
+protocol version, and local refuses agents that have unsupported version.
+Local then sends `settings`.
 
 ## Compute desired state
-Local runs deploy functions, imperatively creating the declarative state we'll
-plan towards. In other words: we figure out all tasks and their inputs.
+Local runs the deploy script's `on(...)` blocks for every host, imperatively
+creating the declarative state we'll plan towards: tasks, their inputs and
+their `deps`. Each rolling `on(...)` block also records which tasks it added
+on each host, in host order.
 
-## Remote plans
-Local sends each remote its desired state: the tasks and their inputs.
-Each remote compares this to state stored on its disk, then replies with
-differences.
+Tasks can use outputs of other tasks (what their last step returned) through
+`task.outputs`. These are proxies that turn into tokens like
+`$tunkki{h1.endpoint/ip}` once all tasks are loaded. The task whose output is
+used is added to `deps` automatically.
 
-Once all remotes have replied, local has list of all created/deletes tasks
-and *some* changed tasks. At this point, we do not yet know to how many
-*other* tasks these changes cascade to.
+## Plan
+Local asks every remote for the state of the stack. Each replies with its
+state file, `/opt/tunkki/<stack>/state/current.json`, and its sha256 hash.
+The state file maps task ids to records of the task type (`handler`), the
+input it was last applied with (`state`), its `output` and its `deps`.
 
-## Cascade changes
-Local builds a dependency graph/tree of all tasks.
-Then, it marks dependents of changed tasks as changed recursively.
-While doing so, local computes so-called *replacements* that are used to allow
-outputs of tasks being used as inputs.
+Local compares each task to its record:
 
-Once all (potential) changes are known, we have a plan! It can be presented
-to user, serialized or, finally, applied.
+- No record: **created**.
+- Different task type: **replaced**. The old one is cleaned up with its old
+  type, then the new one is applied.
+- Different input, after substituting known outputs: **updated**. A token
+  whose output isn't known yet also counts as a difference.
+- Otherwise **unchanged**.
 
-## Apply changes
-Local creates an apply session to all remotes, and begins sending changes as
-directed by the plan. Remotes execute handlers concurrently, up to a configured
-concurrent task limit. Dependencies are handled entirely on local side!
+Records without a task are **deleted**.
+
+When outputs of tasks are used as inputs into other tasks, tasks that need
+no changes in reality may be marked as updated. This is unavoidable, but apply
+phase will not rerun these unnecessarily.
+
+Then local decides the order:
+
+- A task runs after its `deps`.
+- A deleted task is cleaned up after the tasks that used it, according to the
+  stored `deps`, have finished. If a task that is kept used it, even through
+  other tasks, the deleted task also waits for that.
+- Other deleted tasks are cleaned up before anything is created, updated or
+  replaced on the same host, so that e.g. a renamed task doesn't remove the
+  file its new self just wrote. This may cause brief downtime if the user is
+  careless with their deletes, but better than e.g. naming conflicts.
+- In a rolling `on(...)` block, a host's tasks start once the previous host's
+  tasks have finished. Hosts without tasks in the block are skipped.
+
+Dependency cycles, including ones through rolling blocks, fail the plan. So do
+task types without a registered handler.
+
+The plan can be shown to the user, saved with `plan --plan-file=foo.plan` and
+applied later with `apply --plan-file=foo.plan`, even from another process.
+Plan files contain stored state, so they are only readable by their owner.
+They must be applied by the same Bun version and the same deploy script.
+
+## Apply
+Local opens an apply session on every remote, giving the state hash that it
+planned against. If any host's state has changed since, nothing is applied.
+Local then bundles the task handlers each host needs and sends them as data
+URLs. Remotes import them from memory and never store them.
+
+Tasks start when the plan's ordering allows. If a task fails, the tasks that
+wait for it are skipped. For each task, local:
+
+1. Cleans up the old task if it was deleted or replaced.
+2. Substitutes outputs, preferring those produced during this apply. An output
+   that is still unknown fails the task.
+3. Skips the task if its input is still the same as stored. It is applied
+   anyway if the plan is from `--reapply`, or if it sets `reapplyOnDepChange`
+   and one of its `deps` was actually applied. Combined tasks pass this on
+   through their `-end` task.
+4. Runs the steps: local ones itself, remote ones by asking the remote. Each
+   step gets the previous step's return value. Only the last step may return
+   nothing.
+5. Asks the remote to commit the task's record. A failed task is not committed,
+   so it is retried on the next apply.
+
+Finally, local commits refreshed records and closes the sessions. Remotes
+report commits that failed when closing.
+
+Concurrent applies to the same stack are currently not prevented,
+since Bun has poor native support for file locking.

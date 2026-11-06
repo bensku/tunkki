@@ -1,34 +1,14 @@
-import * as tunkkiTask from '@bensku/tunkki/task';
-import * as taskUtil from '@bensku/tunkki/task/util';
 import { readEvents, writeEvent } from '../common/event';
-import { Runner } from './runner';
-
-// Make @bensku/tunkki/task resolvable for dynamically imported handler files
-Bun.plugin({
-    name: 'tunkki-task',
-    setup(build) {
-        build.module('@bensku/tunkki/task', () => ({
-            exports: tunkkiTask,
-            loader: 'object',
-        }));
-        build.module('@bensku/tunkki/task/util', () => ({
-            exports: taskUtil,
-            loader: 'object',
-        }));
-    },
-});
+import { serve } from './runner';
 
 if (Bun.argv[2] === 'runner') {
     // We are subprocess of the SSH entrypoint. Our stdout is safe to print to, though discarded
-    const runner = new Runner();
-    for await (const event of readEvents(Bun.stdin.stream())) {
-        try {
-            await runner.handleEvent(event);
-        } catch (e) {
-            // Unhandler error. We're going to crash, but before that, tell local side why
-            process.send!(writeEvent({ type: 'fatal', error: Bun.inspect(e) }));
+    await serve(readEvents(Bun.stdin.stream()), (event) => {
+        // Local may have gone away while a step was still running
+        if (process.connected) {
+            process.send?.(writeEvent(event));
         }
-    }
+    });
     // Sever the IPC channel; otherwise it keeps the event loop ref'd
     // and the runner hangs around until the parent SIGTERMs it.
     process.disconnect?.();

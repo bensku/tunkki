@@ -27,15 +27,21 @@ Flags:
       --target <key=val>   Filter hosts by tag (repeatable, OR semantics)
       --stack <name>       Override the stack name passed to deploy()
       --reapply            Plan every task as changed, even if state matches
+      --plan-file <path>   Also save the plan, for apply --plan-file
 `,
     apply: `Usage: <script> apply [flags]
 
 Plan the changes, prompt for confirmation, and execute on each host.
 
+With --plan-file, apply a plan saved by "plan --plan-file" without prompting.
+This fails if a host's state has changed since the plan was made. Tasks are
+not loaded again, but the script must still be the one that made the plan.
+
 Flags:
       --target <key=val>   Filter hosts by tag (repeatable)
       --stack <name>       Override the stack name passed to deploy()
       --reapply            Re-run every task, even if state matches
+      --plan-file <path>   Apply a saved plan instead of planning
   -y, --yes                Skip the confirmation prompt
 `,
     destroy: `Usage: <script> destroy [flags]

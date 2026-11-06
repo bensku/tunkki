@@ -1,20 +1,25 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { connect, type Host, type Plan, protocols, type Result } from '../..';
+import {
+    connect,
+    type Event,
+    type Host,
+    type Plan,
+    type PlanMode,
+    protocols,
+    type Result,
+} from '../..';
 import * as builder from '../../local/builder';
 
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const AGENT_BINARY = join(REPO_ROOT, 'tunkki');
 
 /**
- * Nebula-related binaries live as SIBLINGS of the tunkki repo (one level above
- * REPO_ROOT). The setup tasks (`nebula.setup`, `nebula.netavarkSetup`,
- * `nebula.bridgedSetup`) read them through their `localPath`. Resolved from
+ * Nebula binaries live as a SIBLING of the tunkki repo (one level above
+ * REPO_ROOT). nebula.setup reads them through its `localPath`. Resolved from
  * REPO_ROOT so they don't depend on the test runner's cwd.
  */
 export const NEBULA_BIN_DIR = join(REPO_ROOT, '..', 'nebula'); // nebula, nebula-cert
-export const NETAVARK_BIN_DIR = join(REPO_ROOT, '..', 'nebula-netavark'); // nebula-netavarkd, nebula-netavark-plugin
-export const BRIDGED_BIN_DIR = join(REPO_ROOT, '..', 'bridged'); // bridged
 
 /**
  * VMs the E2E suite expects to find provisioned via Lima. Match the names in
@@ -116,13 +121,11 @@ export async function waitForServiceState(
 }
 
 /**
- * Returns true if Lima is on PATH, all expected VMs are running, AND each one
- * has the agent binary installed at /opt/tunkki/tunkki. The agent is uploaded
- * automatically if missing — we still need a local binary, so build it if
- * needed.
+ * Returns true if Lima is on PATH and all expected VMs are running. The agent
+ * is built from this checkout and uploaded to each VM, so that the VMs never
+ * run an outdated one.
  *
- * On the first call this can take a few seconds (binary build + uploads).
- * Subsequent calls are cheap (memoized).
+ * Memoized, since building and uploading takes a while.
  */
 let readyPromise: Promise<boolean> | undefined;
 export function vmsReady(): Promise<boolean> {
@@ -150,36 +153,49 @@ async function checkAndPrep(): Promise<boolean> {
         if (!ls.includes(vm)) return false;
     }
 
-    // 3. Build the local binary if absent.
-    if (!(await Bun.file(AGENT_BINARY).exists())) {
-        const build = Bun.spawn({
-            cmd: ['bun', 'run', join(REPO_ROOT, 'build.ts')],
-            cwd: REPO_ROOT,
-            stdout: 'inherit',
-            stderr: 'inherit',
-        });
-        await build.exited;
-        if (build.exitCode !== 0)
-            throw new Error('failed to build agent binary');
-    }
+    // 3. Build the agent
+    const build = Bun.spawn({
+        cmd: ['bun', 'run', join(REPO_ROOT, 'build.ts')],
+        cwd: REPO_ROOT,
+        stdout: 'inherit',
+        stderr: 'inherit',
+    });
+    await build.exited;
+    if (build.exitCode !== 0) throw new Error('failed to build agent binary');
 
-    // 4. Upload the agent to each VM that doesn't yet have it.
-    for (const vm of TEST_VMS) {
-        if (await vmFileExists(vm, '/opt/tunkki/tunkki')) continue;
-        const ok = await vmConn(vm).upload(AGENT_BINARY, '/opt/tunkki/tunkki');
-        if (!ok) throw new Error(`agent upload to ${vm} failed`);
-    }
-
+    // 4. Upload it where it differs. Uploads are large, and large transfers
+    // can crash QEMU (see relaxNicOffloads)
+    const hash = Bun.CryptoHasher.hash(
+        'sha256',
+        await Bun.file(AGENT_BINARY).bytes(),
+        'hex',
+    );
+    await Promise.all(
+        TEST_VMS.map(async (vm) => {
+            const remote = await vmExec(
+                vm,
+                'sha256sum /opt/tunkki/tunkki 2>/dev/null || true',
+            );
+            if (remote.stdout.startsWith(hash)) return;
+            await relaxNicOffloads(vm);
+            const ok = await vmConn(vm).upload(
+                AGENT_BINARY,
+                '/opt/tunkki/tunkki',
+            );
+            if (!ok) throw new Error(`agent upload to ${vm} failed`);
+        }),
+    );
     return true;
 }
 
 /**
  * Nebula E2E preconditions, layered on top of {@link vmsReady}:
  *  - vmsReady() is satisfied (Lima up, agent uploaded),
- *  - the five Nebula binaries exist locally — the setup tasks upload them to
- *    the VMs,
+ *  - the Nebula binaries exist locally — nebula.setup uploads them to the VMs,
  *  - `nebula-cert` is on the LOCAL PATH — endpoint cert signing runs in a
- *    `local` step as a bare `nebula-cert sign` (task/nebula/endpoint.ts).
+ *    `local` step as a bare `nebula-cert sign` (task/nebula/endpoint.ts),
+ *  - /usr/bin is writable on test1, since nebula.setup installs there. It is
+ *    not on MicroOS, which test/test-vms.sh sets up.
  *
  * Memoized like {@link vmsReady}; warns and returns false (→ tests skip) when a
  * precondition is unmet.
@@ -192,16 +208,10 @@ export function nebulaReady(): Promise<boolean> {
 
 async function checkNebula(): Promise<boolean> {
     if (!(await vmsReady())) return false;
-    const required = [
-        join(NEBULA_BIN_DIR, 'nebula'),
-        join(NEBULA_BIN_DIR, 'nebula-cert'),
-        join(NETAVARK_BIN_DIR, 'nebula-netavarkd'),
-        join(NETAVARK_BIN_DIR, 'nebula-netavark-plugin'),
-        join(BRIDGED_BIN_DIR, 'bridged'),
-    ];
-    for (const f of required) {
-        if (!(await Bun.file(f).exists())) {
-            console.warn(`[nebula] missing local binary: ${f}`);
+    for (const binary of ['nebula', 'nebula-cert']) {
+        const path = join(NEBULA_BIN_DIR, binary);
+        if (!(await Bun.file(path).exists())) {
+            console.warn(`[nebula] missing local binary: ${path}`);
             return false;
         }
     }
@@ -214,6 +224,14 @@ async function checkNebula(): Promise<boolean> {
         console.warn(
             '[nebula] nebula-cert not on local PATH (needed for cert signing)',
         );
+        return false;
+    }
+    const writable = await vmExec(
+        'test1',
+        'touch /usr/bin/.tunkki-e2e && rm /usr/bin/.tunkki-e2e',
+    );
+    if (writable.exitCode !== 0) {
+        console.warn('[nebula] /usr/bin on test1 is read-only');
         return false;
     }
     return true;
@@ -246,31 +264,34 @@ export function clearTasks(): void {
 }
 
 export interface ApplyOutcome {
-    plans: Plan[];
+    plan: Plan;
     results: Result[];
+    events: Event[];
 }
 
 /**
  * Run one full plan→execute→close cycle. The caller's `define` callback
- * registers tasks via the global builder (`podman.container(...)`,
- * `systemd.service(...)`, etc.). The task list is cleared before and after so
- * tests can't interfere with each other. Pass mode='destroy' to exercise the
- * destroy path while the same tasks are still defined.
+ * registers tasks via the global builder (`on(...)`, `files.put(...)`, etc.).
+ * The task list is cleared before and after so tests can't interfere with
+ * each other.
  */
 export async function applyOnce(
     stack: string,
     hosts: Host[],
     define: () => void,
-    mode: 'apply' | 'destroy' | 'reapply' = 'apply',
+    mode: PlanMode = 'apply',
 ): Promise<ApplyOutcome> {
     clearTasks();
     try {
         define();
         const pool = await connect(hosts);
         try {
-            const plans = await pool.plan(stack, mode);
-            const results = await pool.execute(plans);
-            return { plans, results };
+            const plan = await pool.plan(stack, mode);
+            const events: Event[] = [];
+            const results = await pool.execute(plan, (event) =>
+                events.push(event),
+            );
+            return { plan, results, events };
         } finally {
             await pool.close();
         }
@@ -280,25 +301,40 @@ export async function applyOnce(
 }
 
 /**
- * Tear down a stack on the given hosts: connects, plans with no tasks (so the
- * remote diffs everything as deleted), executes the cleanup steps, closes.
- *
- * Best-effort: meant for `finally` blocks. Errors are swallowed so a failed
- * teardown doesn't mask the original test failure — but is logged via the
- * returned Result list, which the caller can inspect.
+ * Plans without applying.
  */
-export async function destroyStack(
+export async function planOnce(
     stack: string,
     hosts: Host[],
-): Promise<Result[]> {
+    define: () => void,
+): Promise<Plan> {
     clearTasks();
-    const pool = await connect(hosts);
     try {
-        const plans = await pool.plan(stack, 'destroy');
-        return await pool.execute(plans);
+        define();
+        const pool = await connect(hosts);
+        try {
+            return await pool.plan(stack);
+        } finally {
+            await pool.close();
+        }
     } finally {
-        await pool.close();
         clearTasks();
+    }
+}
+
+/**
+ * Tear down a stack on the given hosts. Meant for `finally` blocks, so errors
+ * are logged rather than thrown, to not mask the original test failure.
+ */
+export async function destroyStack(stack: string, hosts: Host[]) {
+    try {
+        const { results } = await applyOnce(stack, hosts, () => {}, 'destroy');
+        const failed = results.filter((r) => r.errored.length > 0 || r.error);
+        if (failed.length > 0) {
+            console.warn(`destroying ${stack} failed:`, failed);
+        }
+    } catch (e) {
+        console.warn(`destroying ${stack} failed:`, e);
     }
 }
 
@@ -309,104 +345,59 @@ export function uniqueStack(prefix: string): string {
         .slice(2, 6)}`;
 }
 
-/**
- * Probe an HTTP endpoint over the Nebula overlay FROM a host (hosts have curl;
- * the nginx image does not). Retries every 500ms until the response is 200 and
- * — if `expectBody` is given — its body contains that substring, or the
- * deadline passes. Returns the matching body.
- *
- * Overlay reachability needs lighthouse registration + a Nebula handshake after
- * the daemons start, which is not synchronous with `systemctl is-active`, so a
- * single shot is racy. `-g` lets curl accept a bracketed literal IPv6 host. We
- * fetch the status code and the body in one shell line so an empty-body 200 is
- * not mistaken for a connection failure.
- */
-export async function httpGetOverNebula(
-    fromVm: TestVm,
-    ipv6: string,
-    opts: {
-        port?: number;
-        path?: string;
-        expectBody?: string;
-        timeoutMs?: number;
-    } = {},
-): Promise<string> {
-    const { port = 80, path = '/', expectBody, timeoutMs = 60_000 } = opts;
-    const url = `http://[${ipv6}]:${port}${path}`;
-    const deadline = Date.now() + timeoutMs;
-    let last = '';
-    while (Date.now() < deadline) {
-        const r = await vmExec(
-            fromVm,
-            `curl -g -s -o /dev/null -w '%{http_code}' --max-time 3 '${url}'; echo; curl -g -s --max-time 3 '${url}' || true`,
-        );
-        const nl = r.stdout.indexOf('\n');
-        const code = (nl >= 0 ? r.stdout.slice(0, nl) : r.stdout).trim();
-        const body = nl >= 0 ? r.stdout.slice(nl + 1) : '';
-        last = `code=${code} body=${body.trim().slice(0, 80)}`;
-        if (
-            code === '200' &&
-            (expectBody === undefined || body.includes(expectBody))
-        ) {
-            return body;
-        }
-        await Bun.sleep(500);
-    }
-    throw new Error(
-        `httpGetOverNebula(${fromVm} -> ${url}) never succeeded within ${timeoutMs}ms (last: ${last})`,
+/** Directory on the VMs for probe tasks of a stack. */
+export function probeDir(stack: string): string {
+    return `/var/tmp/tunkki-e2e/${stack}`;
+}
+
+/** Lines that probe tasks have logged on a VM, or [] if none. */
+export async function probeLog(vm: TestVm, dir: string): Promise<string[]> {
+    const r = await vmExec(vm, `cat "${dir}/log" 2>/dev/null || true`);
+    return r.stdout.split('\n').filter((line) => line.length > 0);
+}
+
+/** Removes probe directories of a stack from VMs. */
+export async function removeProbes(stack: string, vms: readonly TestVm[]) {
+    await Promise.all(
+        vms.map((vm) => vmExec(vm, `rm -rf "${probeDir(stack)}"`)),
     );
 }
 
-/**
- * Probe an HTTP URL from INSIDE a container via `podman exec <container> wget`.
- * When `url` uses a `*.nebula.test` hostname this exercises Nebula DNS
- * resolution end-to-end (you can't fetch by name without resolving it first).
- * Retries until the body matches `expectBody` (if given) or the deadline passes.
- */
-export async function httpGetFromContainer(
-    vm: TestVm,
-    container: string,
-    url: string,
-    opts: { expectBody?: string; timeoutMs?: number } = {},
-): Promise<string> {
-    const { expectBody, timeoutMs = 60_000 } = opts;
-    const deadline = Date.now() + timeoutMs;
-    let last = '';
-    while (Date.now() < deadline) {
-        const r = await vmExec(
-            vm,
-            `podman exec ${container} wget -q -T 3 -O - '${url}'`,
-        );
-        const body = r.stdout;
-        last = `exit=${r.exitCode} body=${body.trim().slice(0, 80)}`;
-        if (
-            r.exitCode === 0 &&
-            (expectBody === undefined || body.includes(expectBody))
-        ) {
-            return body;
-        }
-        await Bun.sleep(500);
-    }
-    throw new Error(
-        `httpGetFromContainer(${vm}/${container} -> ${url}) never succeeded within ${timeoutMs}ms (last: ${last})`,
+/** Errors of an apply, both task and host errors. */
+export function errorsOf(outcome: ApplyOutcome): string[] {
+    return outcome.results.flatMap((r) => [
+        ...r.errored.map((e) => `${e.taskId}: ${e.error}`),
+        ...(r.error ? [`${r.host}: ${r.error}`] : []),
+    ]);
+}
+
+/** Index of the first event matching the given filter. */
+export function eventIndex(
+    events: Event[],
+    host: string,
+    type: Event['type'],
+    taskId?: string,
+): number {
+    return events.findIndex(
+        (e) =>
+            e.host.id === host &&
+            e.type === type &&
+            (taskId === undefined || e.taskId === taskId),
     );
 }
 
 /**
  * Best-effort workaround for a QEMU `socket`-netdev abort seen on
- * `lima:user-v2` under inter-VM traffic:
+ * `lima:user-v2` under heavy traffic:
  *
  *   qemu-system-x86_64: net/net.c: net_fill_rstate: Assertion `size == 0' failed.
  *
  * QEMU's socket netdev frames each packet with a 4-byte length prefix; a frame
  * larger than its receive buffer (~64KiB) desyncs the framing and aborts the
  * VM. Disabling receive coalescing (GRO) and capping GSO sizing on the guest
- * virtio-net NIC keeps frames small.
- *
- * NOTE: on virtio_net most TX segmentation offloads are already `off [fixed]`,
- * so the guest usually can't emit oversized frames itself — if the crash
- * persists, the oversized frames originate in the host-side user-v2 stack and
- * the real fix is a different VM network backend (e.g. socket_vmnet), not this.
+ * virtio-net NIC keeps frames small. If the crash persists, the oversized
+ * frames come from the host side, and the real fix is a different VM network
+ * backend (e.g. socket_vmnet).
  */
 export async function relaxNicOffloads(vm: TestVm): Promise<void> {
     await vmExec(

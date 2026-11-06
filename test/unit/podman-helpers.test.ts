@@ -72,50 +72,54 @@ describe('renderVolume', () => {
         expect(renderVolume(undefined)).toBeUndefined();
     });
 
-    test('passes a raw string through', () => {
-        expect(renderVolume('/host:/cont:ro')).toEqual(['/host:/cont:ro']);
+    test('joins a [source, target] pair', () => {
+        expect(renderVolume([['/host', '/cont']])).toEqual(['/host:/cont']);
     });
 
     test('renders an anonymous (target-only) volume', () => {
-        expect(renderVolume({ target: '/data' })).toEqual(['/data']);
+        expect(renderVolume([{ target: '/data' }])).toEqual(['/data']);
     });
 
     test('renders a host-path bind mount', () => {
-        expect(renderVolume({ source: '/srv/foo', target: '/data' })).toEqual([
-            '/srv/foo:/data',
-        ]);
+        expect(renderVolume([{ source: '/srv/foo', target: '/data' }])).toEqual(
+            ['/srv/foo:/data'],
+        );
     });
 
     test('renders a Quadlet-volume reference', () => {
-        expect(renderVolume({ source: 'foo.volume', target: '/data' })).toEqual(
-            ['foo.volume:/data'],
-        );
+        expect(
+            renderVolume([{ source: 'foo.volume', target: '/data' }]),
+        ).toEqual(['foo.volume:/data']);
     });
 
     test('joins options with commas', () => {
         expect(
-            renderVolume({
-                source: '/srv/foo',
-                target: '/data',
-                options: ['ro', 'Z'],
-            }),
+            renderVolume([
+                {
+                    source: '/srv/foo',
+                    target: '/data',
+                    options: ['ro', 'Z'],
+                },
+            ]),
         ).toEqual(['/srv/foo:/data:ro,Z']);
     });
 
     test('omits the option suffix when options is empty', () => {
         expect(
-            renderVolume({
-                source: '/srv/foo',
-                target: '/data',
-                options: [],
-            }),
+            renderVolume([
+                {
+                    source: '/srv/foo',
+                    target: '/data',
+                    options: [],
+                },
+            ]),
         ).toEqual(['/srv/foo:/data']);
     });
 
-    test('renders an array of mixed string and structured entries', () => {
+    test('renders an array of mixed entries', () => {
         expect(
             renderVolume([
-                '/host:/cont',
+                ['/host', '/cont'],
                 { target: '/anon' },
                 { source: 'data.volume', target: '/data', options: ['ro'] },
             ]),

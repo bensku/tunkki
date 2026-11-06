@@ -1,366 +1,109 @@
-import * as fs from 'node:fs/promises';
-import { type Event, writeEvent } from '../common/event';
+import { CURRENT_PROTOCOL, type Event } from '../common/event';
 import { log, setupLogger } from '../common/log';
-import type { TaskHandler } from '../common/task';
-import { Semaphore } from './util';
+import { openSession, type Session } from './session';
+import { stateDir as defaultStateDir, loadState } from './state';
+import type { Reply } from './util';
 
-export class Runner {
-    #handlerDir: string | undefined;
-    #stateDir: string | undefined;
+/**
+ * Serves local until the event stream ends.
+ * @param events Events from local.
+ * @param reply Sends an event to local.
+ * @param stateDir State directory of a stack.
+ */
+export async function serve(
+    events: AsyncIterable<Event>,
+    reply: Reply,
+    stateDir: (stack: string) => string = defaultStateDir,
+) {
+    reply({ type: 'hello', protocol: CURRENT_PROTOCOL });
 
-    /**
-     * Current state on this remote.
-     */
-    #state: Record<string, TaskState> = {};
+    const sessions = new Map<string, Session>();
+    const pending = new Set<Promise<void>>();
 
-    /**
-     * Tasks that we have seen since last reset. This includes tasks that do
-     * not need any action from us!
-     */
-    #seenTasks: Set<string>;
-
-    /**
-     * Tasks that need to be applied or cleaned up. This does NOT include
-     * tasks that do not need any action.
-     */
-    #tasks: Map<string, Task>;
-
-    /**
-     * Reverse dependency index: task id -> ids of tasks that depend on it.
-     * Built incrementally as `task` events arrive so we can wake dependents
-     * the moment a dependency completes.
-     */
-    #dependents: Map<string, Set<string>>;
-
-    /**
-     * Tasks that errored, or that were skipped due to a transitive failed
-     * dependency. New `run` events for these reply `skipped` immediately.
-     */
-    #failed: Set<string>;
-
-    /**
-     * `run` events with step 0 that arrived before their dependencies were
-     * completed. Typically, this occurs when said dependencies need to bounce
-     * back between remote and local steps.
-     *
-     * `run` events after step 0 are never queued.
-     */
-    #pending: Map<string, RunEvent>;
-
-    #taskSlots: Semaphore | undefined;
-    #saveLock: Semaphore;
-
-    constructor() {
-        this.#seenTasks = new Set();
-        this.#tasks = new Map();
-        this.#dependents = new Map();
-        this.#failed = new Set();
-        this.#pending = new Map();
-        this.#saveLock = new Semaphore(1);
-    }
-
-    async #loadConfig(workDir: string, concurrency: number) {
-        this.#handlerDir = `${workDir}/handlers`;
-        this.#stateDir = `${workDir}/state`;
-        this.#taskSlots = new Semaphore(concurrency);
-
-        const file = Bun.file(`${this.#stateDir}/current.json`);
-        if (!(await file.exists())) {
-            this.#state = {}; // No state file, possibly first ever deploy
-        } else {
-            this.#state = await file.json();
-        }
-        log.debug('loaded local state', 'file', file.name);
-    }
-
-    async #saveState() {
-        const release = await this.#saveLock.acquire();
-        try {
-            // Write to different file, then atomic rename to reduce likehood of state corruption
-            await Bun.write(
-                `${this.#stateDir}/next.json`,
-                JSON.stringify(this.#state),
-            );
-            await fs.rename(
-                `${this.#stateDir}/next.json`,
-                `${this.#stateDir}/current.json`,
-            );
-            log.debug('saved state', 'file', `${this.#stateDir}/current.json`);
-        } finally {
-            release();
-        }
-    }
-
-    async handleEvent(event: Event) {
-        log.debug('local->remote', 'event', event);
+    const handle = async (event: Event) => {
         switch (event.type) {
             case 'settings':
-                // Local sends configuration to us
                 setupLogger((msg) => console.error(...msg.msg), event.logLevel);
-                await this.#loadConfig(
-                    `/opt/tunkki/${event.stack}`,
-                    event.concurrency,
-                );
-                log.info(
-                    'configured',
-                    'stack',
-                    event.stack,
-                    'concurrency',
-                    event.concurrency,
-                    'logLevel',
-                    event.logLevel,
-                );
                 break;
-            case 'uploadHandlers': {
-                // Write handlers to disk, overwriting old ones if needed
-                for (const [name, code] of Object.entries(event.handlers)) {
-                    await Bun.write(`${this.#handlerDir}/${name}.ts`, code);
-                }
+            case 'plan':
+                reply(await planResult(event.stack, stateDir(event.stack)));
                 break;
-            }
-            case 'task': {
-                // Local has sent a task. Queue if we need to execute anything
-                this.#seenTasks.add(event.id); // at least this task was not deleted
-
-                const oldState = this.#state[event.id];
-                if (
-                    !event.reapply &&
-                    oldState?.handler === event.taskType &&
-                    Bun.deepEquals(oldState?.state, event.state)
-                ) {
-                    // No changes needed
-                    reply({
-                        type: 'status',
-                        id: event.id,
-                        status: 'unchanged',
-                        oldState: undefined, // Same as what local side already has, no need to pass it
-                    });
-                } else {
-                    // Some changes needed, track a task...
-                    try {
-                        const handler: TaskHandler =
-                            event.taskType === '$noop'
-                                ? {
-                                      // Special case: execute no handler at all, actually
-                                      apply: {
-                                          location: 'remote',
-                                          handler: async () => undefined,
-                                      },
-                                  }
-                                : await import(
-                                      `${this.#handlerDir}/${event.taskType}.ts`
-                                  );
-                        this.#tasks.set(event.id, {
-                            type: event.taskType,
-                            handler,
-                            state: event.state,
-                            // If task type changed, we need to cleanup it before updating with new state
-                            recreateWith:
-                                oldState?.handler &&
-                                oldState.handler !== event.taskType
-                                    ? await import(
-                                          `${this.#handlerDir}/${oldState.handler}.ts`
-                                      )
-                                    : undefined,
-                        });
-                    } catch (e) {
-                        // Oh no, failed to load task!
-                        reply({
-                            type: 'fatal',
-                            error: Bun.inspect(e),
-                        });
-                        return;
-                    }
-                    // Let local side know about changes
-                    reply({
-                        type: 'status',
-                        id: event.id,
-                        status: oldState ? 'updated' : 'created',
-                        // If we're updating, pass old state to client; if creating, it is naturally undefined
-                        oldState: oldState?.state,
-                    });
-                }
-                break;
-            }
-            case 'tasksSent': {
-                // Local has sent all tasks. Check if we have tasks that were not sent
-                // and queue them for cleanup if any are found
-                for (const [id, state] of Object.entries(this.#state)) {
-                    if (!this.#seenTasks.has(id)) {
-                        // Deleted
-                        this.#tasks.set(id, {
-                            // Old handler should still exist on our disk...
-                            type: state.handler,
-                            handler:
-                                state.handler === '$noop'
-                                    ? {
-                                          // Special case: execute no handler at all, actually
-                                          apply: {
-                                              location: 'remote',
-                                              handler: async () => undefined,
-                                          },
-                                      }
-                                    : await import(
-                                          `${this.#handlerDir}/${state.handler}.ts`
-                                      ),
-                            state: undefined, // undefined == state does not exist, please cleanup
-                        });
-                        reply({
-                            type: 'status',
-                            id,
-                            status: 'deleted',
-                            oldState: state.state,
-                        });
-                    }
-                }
-
-                // Plan phase done, local side can now command us to deploy if it wishes
-                reply({
-                    type: 'ready',
-                });
-                log.info('all tasks received');
-                break;
-            }
-            case 'run': {
-                this.#dispatchRun(event);
-                break;
-            }
-            // FIXME on done, handle local side telling us about task completion (need to update state etc.)
-            case 'reset':
-                break; // TODO
-        }
-    }
-
-    async #dispatchRun(event: RunEvent) {
-        const release = await this.#taskSlots!.acquire();
-        try {
-            const task = this.#tasks.get(event.id);
-            if (!task) {
-                log.error(
-                    'missing task, possibly after interrupted deploy',
-                    'task',
-                    event.id,
-                );
-                return;
-            }
-            const steps = Array.isArray(task.handler.apply)
-                ? task.handler.apply
-                : [task.handler.apply];
-            let result: unknown;
-            let errored = false;
-            try {
-                if (event.step === 0) {
-                    // First step gets some special handling
-                    if (task?.recreateWith?.cleanup) {
-                        // If task changed handler, we'll need to first cleanup using old handler
-                        await task?.recreateWith?.cleanup(
-                            this.#state[event.id]?.state,
-                        );
-                        log.info('cleanup due to recreate', 'task', event.id);
-                    }
-                    // And then we can apply the first step with state stored locally
-                    if (task.state === undefined) {
-                        // Deleting? Cleanup if the handler can do that
-                        if (task.handler.cleanup) {
-                            await task.handler.cleanup(
-                                this.#state[event.id]?.state,
-                            );
-                        }
-                        result = undefined;
-                        log.info('cleanup due to delete', 'task', event.id);
-                    } else {
-                        // Just apply create/update for first step
-                        if (task.type !== '$noop') {
-                            result = await steps[0]!.handler(
-                                task.state,
-                                undefined,
-                                this.#state[event.id]?.state,
-                            );
-                        }
-                        log.info('executed step', 'task', event.id, 'step', 0);
-                    }
-                } else {
-                    // For subsequent steps, we've been passed the state
-                    result = await steps[event.step]!.handler(event.state);
-                    log.info(
-                        'executed step',
-                        'task',
-                        event.id,
-                        'step',
-                        event.step,
+            case 'openSession': {
+                let error: string | undefined;
+                try {
+                    const session = await openSession(
+                        {
+                            id: event.session,
+                            stateDir: stateDir(event.stack),
+                            concurrency: event.concurrency,
+                            reply,
+                        },
+                        event.stateHash,
                     );
+                    sessions.set(event.session, session);
+                    log.info('opened session', 'stack', event.stack);
+                } catch (e) {
+                    error = Bun.inspect(e);
                 }
-            } catch (e) {
-                log.error(
-                    'failed task step',
-                    'task',
-                    event.id,
-                    'step',
-                    event.step,
-                    'error',
-                    e,
-                );
-                result = Bun.inspect(e);
-                errored = true;
+                reply({ type: 'ready', session: event.session, error });
+                break;
             }
-
-            // Let local side know that we're done with the task
-            reply({
-                type: 'done',
-                id: event.id,
-                result,
-                status: errored ? 'error' : 'done',
-            });
-
-            if (errored) {
-                this.#markFailed(event.id);
-            } else if (task.state === undefined) {
-                // Task was deleted
-                delete this.#state[event.id];
-                await this.#saveState();
-            } else if (event.step === steps.length - 1) {
-                // Last step executed successfully, save state and mark as completed
-                this.#state[event.id] = {
-                    handler: task.type,
-                    state: task.state,
-                };
-                await this.#saveState();
-            }
-        } finally {
-            release();
+            case 'loadHandlers':
+                await sessionOf(event.session).loadHandlers(event.handlers);
+                break;
+            case 'run':
+                sessionOf(event.session).run(event);
+                break;
+            case 'commit':
+                sessionOf(event.session).commit(event.id, event.record);
+                break;
+            case 'closeSession':
+                await sessionOf(event.session).close();
+                sessions.delete(event.session);
+                break;
+            default:
+                throw new Error(`unexpected event ${event.type}`);
         }
-    }
+    };
 
-    #markFailed(id: string) {
-        this.#failed.add(id);
-
-        // Cancel dependents
-        for (const depId of this.#dependents.get(id) ?? []) {
-            const cancelled = this.#pending.delete(depId);
-            if (cancelled) {
-                // We need to let local side know that task was skipped due to dependency failure
-                reply({
-                    type: 'done',
-                    id: depId,
-                    result: undefined,
-                    status: 'skipped',
-                });
-            }
+    const sessionOf = (id: string) => {
+        const session = sessions.get(id);
+        if (!session) {
+            throw new Error(`unknown session ${id}`);
         }
+        return session;
+    };
+
+    // Don't await handlers here; runs must proceed concurrently
+    for await (const event of events) {
+        log.debug('local->remote', 'event', event);
+        const promise = handle(event)
+            .catch((e) => log.error('failed to handle event', event.type, e))
+            .finally(() => pending.delete(promise));
+        pending.add(promise);
     }
+    await Promise.all(pending);
 }
 
-type RunEvent = Extract<Event, { type: 'run' }>;
-
-interface Task {
-    type: string;
-    handler: TaskHandler;
-    state: unknown;
-    onchanged?: string[];
-    recreateWith?: TaskHandler;
-}
-
-interface TaskState {
-    handler: string;
-    state: unknown;
+async function planResult(
+    stack: string,
+    dir: string,
+): Promise<Extract<Event, { type: 'planResult' }>> {
+    try {
+        const state = await loadState(dir);
+        return {
+            type: 'planResult',
+            stack,
+            tasks: state.records,
+            stateHash: state.hash,
+        };
+    } catch (e) {
+        return {
+            type: 'planResult',
+            stack,
+            tasks: {},
+            stateHash: '',
+            error: Bun.inspect(e),
+        };
+    }
 }

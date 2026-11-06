@@ -26,6 +26,7 @@ export interface ParsedCli {
         /** 0 debug | 1 info | 2 error | 3 silent */
         logLevel: number;
         stackOverride?: string;
+        planFile?: string;
     };
     /** OR-ed across multiple --target flags. */
     targets: TagSet[];
@@ -148,6 +149,7 @@ export function parseCli(input: string[]): ParsedCli {
     const wantsYes = command === 'apply' || command === 'destroy';
     const wantsHost = command === 'tasks';
     const wantsReapply = command === 'plan' || command === 'apply';
+    const wantsPlanFile = command === 'plan' || command === 'apply';
 
     const options: Options = {
         json: { type: 'boolean' },
@@ -158,6 +160,7 @@ export function parseCli(input: string[]): ParsedCli {
     if (wantsYes) options.yes = { type: 'boolean', short: 'y' };
     if (wantsHost) options.host = { type: 'string' };
     if (wantsReapply) options.reapply = { type: 'boolean' };
+    if (wantsPlanFile) options['plan-file'] = { type: 'string' };
 
     let parsed: ReturnType<typeof parseArgs>;
     try {
@@ -191,6 +194,21 @@ export function parseCli(input: string[]): ParsedCli {
     const json = values.json === true;
     const color = !noColor && !json && Bun.enableANSIColors;
 
+    const planFile =
+        typeof values['plan-file'] === 'string'
+            ? values['plan-file']
+            : undefined;
+    if (
+        command === 'apply' &&
+        planFile &&
+        (targets.length > 0 || values.reapply)
+    ) {
+        throw new CliExitError(
+            2,
+            '--plan-file cannot be combined with --target or --reapply, the plan already decides those',
+        );
+    }
+
     return {
         command,
         flags: {
@@ -202,6 +220,7 @@ export function parseCli(input: string[]): ParsedCli {
             logLevel: logLevelFrom(pre.verbose, pre.quiet),
             stackOverride:
                 typeof values.stack === 'string' ? values.stack : undefined,
+            planFile,
         },
         targets,
         raw: parsed.positionals,

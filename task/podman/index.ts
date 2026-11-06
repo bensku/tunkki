@@ -52,7 +52,7 @@ export const container = taskType<ContainerState, ContainerOutput>(
             });
 
             // Make sure we're deployed BEFORE the container! Otherwise it won't start
-            opts.after.push(ep.id);
+            opts.dependencies.push(ep.id);
         },
     }),
 );

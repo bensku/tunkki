@@ -1,5 +1,6 @@
 import type { Host } from '@bensku/tunkki';
 import * as builder from '../local/builder';
+import { outputRef } from '../local/outputs';
 import { registerHandler } from '../local/task';
 
 export interface Step {
@@ -29,54 +30,51 @@ export function step<T, O = unknown, L = unknown>(
 export interface Output {
     id: string;
 }
+
 export interface TaskOptions {
     /**
-     * Ids of tasks that must be applied before this task.
-     * Optional, by default tasks run in effectively random order.
+     * Ids of tasks that must be applied before this task. Tasks whose output
+     * this task uses as input are handled automatically and need not to be
+     * added here.
      */
-    after?: string[];
+    dependencies?: string[];
 
     /**
-     * If any of the tasks listed here are changed, this task will also be
-     * considered changed. Optional, can be useful for e.g. reloading services
-     * after uploading updated binaries.
+     * If set, this task is reapplied whenever one of its deps was applied,
+     * even if its own input did not change. Useful for e.g. restarting
+     * services after their binaries have been updated.
      */
-    onChanged?: string[];
-
-    /**
-     * Ids of tasks that must be applied before this task and require this
-     * task to be reapplied if they change. I.e. after + onChanged
-     */
-    dependsOn?: string[];
+    requireReapply?: boolean;
 }
+
 export type TaskType<S, O extends Output> = (
     id: string,
     state: S,
     opts?: TaskOptions,
 ) => O;
 
-export function taskType<S, O>(
+/**
+ * Defines a task type.
+ * @param name Unique name of the task type.
+ * @param handler Path of the module that implements it.
+ * @param outputSource Adds extra fields to what the task type returns.
+ * @returns The task type. Tasks it creates have `outputs`, which can be used
+ * in inputs of other tasks to refer to the value the last step returns (R).
+ */
+export function taskType<S, O, R = unknown>(
     name: string,
     handler: string,
-    outputSource?: (
-        id: string,
-        state: S,
-        opts: { after: string[]; onChanged: string[] },
-    ) => O,
-): TaskType<S, O & { id: string }> {
-    registerHandler(name, handler.replace('file://', '')); // Needed by loadHandlerCode and loadSteps etc.
+    outputSource?: (id: string, state: S, opts: { dependencies: string[] }) => O,
+): TaskType<S, O & { id: string; outputs: R }> {
+    registerHandler(name, handler.replace('file://', ''));
     return (id, state, opts) => {
         const qualifiedId = builder.qualifyId(id);
         const task = builder.addTask(qualifiedId, name, state, opts ?? {});
         return {
             id: qualifiedId,
-            ...(outputSource
-                ? outputSource(qualifiedId, state, {
-                      after: task.after,
-                      onChanged: task.onChanged,
-                  })
-                : {}),
-        } as O & { id: string };
+            outputs: outputRef(qualifiedId) as R,
+            ...outputSource?.(qualifiedId, state, { dependencies: task.deps }),
+        } as O & { id: string; outputs: R };
     };
 }
 
@@ -89,16 +87,14 @@ export function combine<S, O>(
         builder.pushId(id);
         const output = handler(state, opts ?? {});
 
-        const tasks = [];
-        for (let i = startIdx; i < builder.tasks.length; i++) {
-            tasks.push(builder.tasks[i]!.id);
-        }
+        // Tasks that depend on the combined task depend on all tasks in it
         const end = builder.addTask(
             builder.qualifyId(`${id}-end`),
             '$noop',
             {},
             {
-                dependsOn: tasks,
+                dependencies: builder.tasks.slice(startIdx).map((task) => task.id),
+                requireReapply: true,
             },
         );
         builder.popId();

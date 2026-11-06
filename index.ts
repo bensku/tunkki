@@ -1,12 +1,11 @@
 import { log } from './common/log';
 import type { TagSet } from './common/task';
+import { applyPlan, type Result, type TaskEvent } from './local/apply';
 import * as builder from './local/builder';
 import { runCli } from './local/cli';
 import { Connection } from './local/connection';
-import * as runner from './local/runner';
-import { newTaskScheduler } from './local/scheduler';
-import type { Task } from './local/task';
-import type { Connector, Connection as ProtocolConnection } from './protocol';
+import { fetchState, makePlan, type Plan, type PlanMode } from './local/plan';
+import type { Connector } from './protocol';
 
 export * as protocols from './protocol';
 export * as files from './task/files';
@@ -48,48 +47,26 @@ export function on(
 ): void {
     const targetTags =
         typeof targets === 'string' ? { host: targets } : targets;
-    builder.addSource(async (host, prev) => {
-        const hostTags = host.tags ?? {};
-        hostTags.host = host.id;
-        let shouldApply = false;
+    builder.addSource(async (host) => {
+        const hostTags: TagSet = { ...host.tags, host: host.id };
         // If we have even one of requested tags, run handler for this host
         // Handler code can do more complicated host selection logic if it wishes to
-        for (const [tag, value] of Object.entries(targetTags)) {
-            if (hostTags[tag] && new Bun.Glob(value).match(hostTags[tag])) {
-                shouldApply = true;
-                break;
-            }
-        }
+        const shouldApply = Object.entries(targetTags).some(
+            ([tag, value]) =>
+                hostTags[tag] && new Bun.Glob(value).match(hostTags[tag]),
+        );
         log.debug('load source', 'host', host.id, 'apply', shouldApply);
-        if (shouldApply) {
-            try {
-                const startIdx = builder.enterHost(host.id);
-                await handler(host);
-
-                // Add task at end which depends on all tasks
-                const tasks = builder.tasks;
-                const end = builder.addTask(
-                    `${tasks.at(-1)?.id}-end`,
-                    '$noop',
-                    {},
-                    { onChanged: [] },
-                ); // FIXME better id source
-                for (let i = startIdx; i < tasks.length - 1; i++) {
-                    const task = tasks[i]!;
-                    end.after!.push(task.id);
-                    end.onChanged!.push(task.id);
-                    // If this is rolling, add dependency on previous end
-                    if (rolling && prev) {
-                        task.after.push(prev.id);
-                    }
-                }
-
-                return end;
-            } finally {
-                builder.exitHost();
-            }
+        if (!shouldApply) {
+            return [];
         }
-    });
+        const startIdx = builder.enterHost(host.id);
+        try {
+            await handler(host);
+        } finally {
+            builder.exitHost();
+        }
+        return builder.tasks.slice(startIdx).map((task) => task.id);
+    }, rolling);
 }
 
 export interface Host {
@@ -118,18 +95,22 @@ export type ConnectionEvent =
           error: unknown;
       };
 
+/**
+ * Connects to agents on remote hosts.
+ */
 export async function connect(
     hosts: Host[],
     callback?: (event: ConnectionEvent) => void,
 ): Promise<TargetPool> {
-    // Attempt to connect to hosts
     const attempts = await Promise.allSettled(
         hosts.map(async (host) => {
             callback?.({ host, type: 'started' });
-            let conn: ProtocolConnection;
+            let conn: Connection | undefined;
             try {
-                conn = await host.conn.connect();
+                conn = new Connection(await host.conn.connect(), host);
+                await conn.handshake();
             } catch (error) {
+                await conn?.close();
                 callback?.({
                     host,
                     type: 'completed',
@@ -145,271 +126,71 @@ export async function connect(
     const failures = attempts
         .filter((conn) => conn.status === 'rejected')
         .map((conn) => conn.reason);
-    const successes = attempts
+    const conns = attempts
         .filter((conn) => conn.status === 'fulfilled')
         .map((conn) => conn.value);
     if (failures.length > 0) {
         // On failure, close the successful connections before erroring!
-        for (const conn of successes) {
-            conn.close();
-        }
+        await Promise.allSettled(conns.map((conn) => conn.close()));
         throw new AggregateError(failures, 'connecting to hosts failed');
     }
     callback?.({ type: 'ready' });
-    // biome-ignore lint/style/noNonNullAssertion: there are no failures, indices in successes are same as indices in hosts
-    const conns = successes.map((conn, i) => new Connection(conn, hosts[i]!));
-
-    log.info('loading deployment tasks', 'hosts', hosts.length);
-    await builder.loadTasks(hosts);
-    log.info('deployment tasks ready', 'tasks', builder.tasks.length);
-    return new TargetPool(conns, builder.tasks);
+    return new TargetPool(conns);
 }
 
-export type Plan = runner.Plan;
-
-export type Event = runner.Event;
-
-export interface Result {
-    /**
-     * Id of host that was deployed to.
-     */
-    host: string;
-    completed: string[];
-    skipped: string[];
-    errored: {
-        taskId: string;
-        error: string;
-    }[];
-}
-
-async function* mergeAsync<T>(gens: AsyncGenerator<T>[]): AsyncGenerator<T> {
-    const next = (g: AsyncGenerator<T>, i: number) =>
-        g.next().then((r) => ({ g, i, r }));
-    const pending = new Map(gens.map((g, i) => [i, next(g, i)]));
-    while (pending.size) {
-        const { g, i, r } = await Promise.race(pending.values());
-        if (r.done) {
-            pending.delete(i);
-        } else {
-            yield r.value;
-            pending.set(i, next(g, i));
-        }
-    }
-}
+export type { Result, TaskEvent as Event } from './local/apply';
+export type { Plan, PlanMode } from './local/plan';
 
 export class TargetPool {
     #conns: Connection[];
-    #stage = 0;
-    #tasks: Task[];
 
-    constructor(conns: Connection[], tasks: Task[]) {
+    constructor(conns: Connection[]) {
         this.#conns = conns;
-        this.#tasks = tasks;
     }
 
-    async plan(
-        stack: string,
-        mode: 'apply' | 'destroy' | 'reapply' = 'apply',
-    ): Promise<Plan[]> {
-        if (this.#stage > 0) {
-            throw new Error('already planned');
+    /**
+     * Plans changes to a stack on all connected hosts.
+     * @param stack Stack name.
+     * @param mode Unless destroying, tasks are loaded from sources added
+     * with on().
+     */
+    async plan(stack: string, mode: PlanMode = 'apply'): Promise<Plan> {
+        const hosts = this.#conns.map((conn) => conn.host);
+        if (mode !== 'destroy') {
+            log.info('loading deployment tasks', 'hosts', hosts.length);
+            await builder.loadTasks(hosts);
         }
-        this.#stage = 1;
-        log.info(
-            'starting plan',
-            'stack',
+        log.info('planning', 'stack', stack, 'mode', mode);
+        const states = await Promise.all(
+            this.#conns.map((conn) => fetchState(conn, stack)),
+        );
+        return makePlan({
             stack,
-            'mode',
             mode,
-            'hosts',
-            this.#conns.length,
-        );
-        const plans = await Promise.all(
-            this.#conns.map((conn) =>
-                runner.plan(
-                    stack,
-                    conn,
-                    mode === 'destroy'
-                        ? []
-                        : this.#tasks.filter(
-                              (task) => task.host === conn.host.id,
-                          ),
-                    mode === 'reapply',
-                ),
-            ),
-        );
-        log.info('planning complete', 'hosts', plans.length);
-        return plans;
+            tasks: builder.tasks,
+            rollingBlocks: builder.rollingBlocks,
+            hosts: states,
+        });
     }
 
+    /**
+     * Applies a plan, made by plan() now or earlier.
+     * @param plan Plan to apply. All of its hosts must be connected.
+     * @param callback Receives progress events.
+     * @returns Results by host.
+     */
     async execute(
-        plans: Plan[],
-        callback?: (event: Event) => void,
+        plan: Plan,
+        callback?: (event: TaskEvent) => void,
     ): Promise<Result[]> {
-        if (this.#stage < 1) {
-            throw new Error('not yet planned');
-        }
-        if (this.#stage > 1) {
-            throw new Error('already executed');
-        }
-        this.#stage = 2;
-
-        // Build the executable task list. Any id reported by the remote as
-        // deleted is represented by a synthetic `$delete` pseudo-task — even
-        // if a user-defined task with the same id is in this.#tasks. The
-        // pseudo replaces the real entry so the runner takes the cleanup
-        // path; otherwise we'd queue the same id twice (causing duplicate
-        // `run` events and double cleanup, which is what `destroy` triggered
-        // when this.#tasks was still populated).
-        // TODO couldn't we just detect if this is destroy, and act accordingly if so?
-        const deletedIds = new Set<string>();
-        for (const plan of plans) {
-            for (const entry of plan.deleted) deletedIds.add(entry.id);
-        }
-        const allTasks = this.#tasks.filter((t) => !deletedIds.has(t.id));
-        for (const plan of plans) {
-            for (const entry of plan.deleted) {
-                allTasks.push({
-                    id: entry.id,
-                    host: plan.host.id,
-                    type: '$delete',
-                    after: [],
-                    state: undefined,
-                    localData: {} as { host: Host },
-                });
+        const conns = Object.keys(plan.hosts).map((host) => {
+            const conn = this.#conns.find((conn) => conn.host.id === host);
+            if (!conn) {
+                throw new Error(`host ${host} in the plan is not connected`);
             }
-        }
-
-        // Create executors that submit tasks to remotes on hosts
-        const generators: AsyncGenerator<runner.Event>[] = [];
-        const executors: Map<string, (task: Task) => void> = new Map();
-        const shutdowns: (() => void)[] = [];
-        for (const plan of plans) {
-            const conn = this.#conns.find((conn) => conn.host === plan.host)!;
-
-            const unchanged = new Set(plan.unchanged);
-            // Use allTasks (not this.#tasks) so synthetic $delete tasks
-            // detected only on the remote are included in the executor's
-            // step map and reachable by exec().
-            const changed = allTasks.filter(
-                (task) => task.host === plan.host.id && !unchanged.has(task.id),
-            );
-            const oldStates: Map<string, unknown> = new Map();
-            plan.updated.forEach((entry) => {
-                oldStates.set(entry.id, entry.oldState);
-            });
-            plan.deleted.forEach((entry) => {
-                oldStates.set(entry.id, entry.oldState);
-            });
-
-            const [listen, exec, shutdown] = await runner.newExecutor(
-                conn,
-                changed,
-                oldStates,
-            );
-            generators.push(listen);
-            executors.set(plan.host.id, exec);
-            shutdowns.push(shutdown);
-        }
-
-        // Create scheduler, but do NOT start it yet. Same allTasks here so
-        // $delete tasks get scheduled.
-        const [scheduler, onCompleted] = newTaskScheduler(allTasks);
-
-        // Mark unchanged tasks as completed (skipped means "skipped due to dependency error" and cascades; don't use it here!)
-        for (const plan of plans) {
-            for (const taskId of plan.unchanged) {
-                onCompleted(
-                    {
-                        host: plan.host,
-                        type: 'completed',
-                        taskId,
-                        status: 'done',
-                    },
-                    true,
-                );
-            }
-        }
-
-        // And now we can schedule rest of the tasks for execution!
-        const hosts = new Map(
-            this.#conns.map((conn) => [conn.host.id, conn.host]),
-        );
-        async function* run(): AsyncGenerator<runner.Event> {
-            try {
-                for await (const sched of scheduler()) {
-                    if (sched.status === 'skipped') {
-                        // Skipped locally (e.g. dependency failed) — the
-                        // task never reaches the remote, so emit its
-                        // completion event here.
-                        yield {
-                            host: hosts.get(sched.task.host)!,
-                            type: 'completed',
-                            status: 'skipped',
-                            taskId: sched.task.id,
-                        };
-                    } else {
-                        yield {
-                            host: hosts.get(sched.task.host)!,
-                            type: 'started',
-                            status: 'started',
-                            taskId: sched.task.id,
-                        };
-                        executors.get(sched.task.host)!(sched.task);
-                    }
-                }
-                log.debug('scheduler has finished');
-            } finally {
-                // Scheduler done — tell each per-host listener to stop
-                // awaiting further remote responses.
-                for (const shutdown of shutdowns) shutdown();
-            }
-        }
-        generators.push(run());
-
-        // Collect per-host results and start rolling tasks as they complete in previous hosts
-        const byHost = new Map<string, Result>(
-            plans.map((plan) => [
-                plan.host.id,
-                {
-                    host: plan.host.id,
-                    completed: [],
-                    skipped: [],
-                    errored: [],
-                },
-            ]),
-        );
-        for await (const event of mergeAsync(generators)) {
-            callback?.(event);
-            switch (event.type) {
-                case 'completed': {
-                    onCompleted(event, false);
-                    const result = byHost.get(event.host.id);
-                    if (!result) {
-                        throw new Error(
-                            `unknown host in event: ${event.host.id}`,
-                        );
-                    }
-                    switch (event.status) {
-                        case 'done':
-                            result.completed.push(event.taskId);
-                            break;
-                        case 'skipped':
-                            result.skipped.push(event.taskId);
-                            break;
-                        case 'error':
-                            result.errored.push({
-                                taskId: event.taskId,
-                                error: event.error ?? 'unknown',
-                            });
-                            break;
-                    }
-                    break;
-                }
-            }
-        }
-
-        return [...byHost.values()];
+            return conn;
+        });
+        return applyPlan(plan, conns, callback);
     }
 
     async close(): Promise<void> {
@@ -418,10 +199,12 @@ export class TargetPool {
 }
 
 /**
- * Plan, apply, destroy, list tasks, or install the agent — driven by CLI
- * subcommands read from `Bun.argv`. This is the entry point a user's
- * deployment script calls. To inspect and apply plans programmatically,
- * use the lower-level `connect()` / `TargetPool` directly instead.
+ * Plan, apply, destroy, list tasks, or install the agent - depending on CLI
+ * arguments. If you just want to deploy things with tunkki CLI, this is almost
+ * certainly what you want.
+ * 
+ * For more fine-grained deployment automation, use `connect()` and the
+ * `TargetPool` APIs by hand.
  * @param stack Stack to apply tasks in.
  * @param hosts List of hosts.
  */

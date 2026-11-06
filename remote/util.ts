@@ -1,5 +1,6 @@
-import { type Event, writeEvent } from '../common/event';
-import { log } from '../common/log';
+import type { Event } from '../common/event';
+
+export type Reply = (event: Event) => void;
 
 export class Semaphore {
     #permits: number;
@@ -27,9 +28,4 @@ export class Semaphore {
             }
         };
     }
-}
-
-export function reply(event: Event) {
-    log.debug('remote->local', 'event', event);
-    process.send!(writeEvent(event));
 }

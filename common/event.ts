@@ -1,203 +1,193 @@
 import { deserialize, serialize } from 'bun:jsc';
-import type { ChangeSet } from '../remote/plan';
-
-interface BaseEvent {
-    type: string;
-}
 
 export const CURRENT_PROTOCOL = 1;
 
 /**
- * Remote->local.
+ * Contents of a stack's state file on a remote: task ids mapped to records.
+ *
+ * Old versions treat every top-level key as a task, so this must never
+ * contain anything else. New data goes inside records instead.
  */
-interface Hello extends BaseEvent {
+export type StateFile = Record<string, TaskRecord>;
+
+export interface TaskRecord {
+    /**
+     * Task type.
+     */
+    handler: string;
+
+    /**
+     * Resolved input of the task when it was last applied.
+     */
+    state: unknown;
+
+    /**
+     * Return value of the task's last step.
+     */
+    output?: unknown;
+
+    /**
+     * Ids of tasks this task depended on.
+     */
+    deps?: string[];
+}
+
+/**
+ * Remote->local. First event the remote sends after starting.
+ */
+interface Hello {
     type: 'hello';
-
-    /**
-     * Protocol version the remote wants to speak.
-     * Local can reject
-     */
     protocol: number;
+}
 
-    /**
-     * Remote log level.
-     */
+/**
+ * Local->remote. Sent once after hello.
+ */
+interface Settings {
+    type: 'settings';
     logLevel: number;
 }
 
 /**
- * Local->remote. Request change set from remote
+ * Local->remote. Requests the state of a stack.
  */
-interface Plan extends BaseEvent {
+interface Plan {
     type: 'plan';
-
-    /**
-     * States of tasks from local.
-     */
-    incoming: Record<string, object>;
+    stack: string;
 }
 
 /**
- * Remote->local. Change set for planning.
+ * Remote->local. Reply to Plan.
  */
-interface PlanResult extends BaseEvent {
+interface PlanResult {
     type: 'planResult';
-
-    /**
-     * Change set, as seen by sending remote.
-     */
-    changeSet: ChangeSet;
-
-    /**
-     * Entire old state from remote.
-     */
-    oldInputs: Record<string, unknown>;
-
-    oldOutputs: Record<string, unknown>;
+    stack: string;
+    tasks: StateFile;
+    stateHash: string;
+    error?: string;
 }
 
-interface BaseApplyEvent extends BaseEvent {
-    /**
-     * Apply session id.
-     */
+interface SessionEvent {
     session: string;
 }
 
 /**
- * Local->remote. Opens a new apply session with given settings.
+ * Local->remote. Opens an apply session. Fails unless the state file still
+ * has the given hash. This prevents dangerous application of stale plans
  */
-interface OpenSession extends BaseApplyEvent {
+interface OpenSession extends SessionEvent {
     type: 'openSession';
 
     /**
-     * Stack id. This affects state directory.
+     * Stack name. Distinct stacks have distinct state, though they all operate
+     * on same shared Linux machine.
      */
     stack: string;
 
     /**
-     * Number of tasks that can be applied concurrently.
+     * How many operations the remote should execute concurrently.
      */
     concurrency: number;
+
+    /**
+     * State hash from PlanResult message. Remote will reject session if this
+     * does not equal to hash of file on disk.
+     */
+    stateHash: string;
 }
 
 /**
- * Local->remote. Instruct remote to load specified handlers.
+ * Local->remote. Handler bundles as base64 data URLs, by task type.
  */
-interface LoadHandlers extends BaseApplyEvent {
+interface LoadHandlers extends SessionEvent {
     type: 'loadHandlers';
 
     /**
-     * Handler names (e.g. podman/pod) mapped to TS script
-     * (e.g. podman/pod.ts content).
+     * Task type ids to handler bundles (executable Javascript).
      */
     handlers: Record<string, string>;
 }
 
 /**
- * Remote->local. Remote is ready to run tasks.
+ * Remote->local. Reply to OpenSession and LoadHandlers.
  */
-interface Ready extends BaseApplyEvent {
+interface Ready extends SessionEvent {
     type: 'ready';
-
-    /**
-     * Error if something failed while loading handlers or other setup.
-     */
     error?: string;
 }
 
 /**
- * Local->remote. Order to execute a step in a task. Remote will reply with
- * Done once task has been executed (successfully or not).
+ * Local->remote. Runs one remote step of a task, or cleans the task up if
+ * state is undefined. In cleanup, task is the type of the stored record.
  */
-interface Run extends BaseApplyEvent {
+interface Run extends SessionEvent {
     type: 'run';
-
-    /**
-     * Task type id.
-     */
     task: string;
-
-    /**
-     * Id of THIS task instance.
-     */
     id: string;
-
-    /**
-     * Index of step in handler's step list to run.
-     */
     step: number;
-
-    /**
-     * State to pass to the step. If undefined, the task is cleaned up.
-     * Otherwise, it is applied.
-     */
     state: unknown;
-
-    /**
-     * Before doing anything with state, recursively substitute values that
-     * are also keys in this record, with their corresponding values from this
-     * record. For example:
-     *
-     * state: { a: 123, b: "foo" }
-     * subs: { foo: { test: 1} }
-     *
-     * would become:
-     * state: { a 123, b: { test: 1 } }
-     */
-    replacements: Record<string, unknown>;
-
-    /**
-     * If true, this will always be applied. Manual dependsOn can cause this.
-     */
-    force: boolean;
 }
 
 /**
- * Remote->local. Remote has completed a task step.
- * Local->remote. Local has completed the LAST step of a task.
+ * Remote->local. Progress of a Run. Each Run gets at most one 'started' and
+ * then exactly one 'done' or 'error'.
  */
-interface Done extends BaseApplyEvent {
+interface Done extends SessionEvent {
     type: 'done';
-
-    /**
-     * Id of task that was run.
-     */
     id: string;
-
-    /**
-     * How did the task step complete.
-     * done: step was executed
-     * error: error was thrown during step execution
-     * unchanged: inputs might've had changed, but actually didn't,
-     * hence nothing was executed
-     */
     status: StepStatus;
 
     /**
-     * Step result. If there are more steps, this is passed as state to the
-     * next one.
+     * Step's return value, or error message.
      */
     output: unknown;
 }
 
-interface CloseSession extends BaseApplyEvent {
+/**
+ * Local->remote. Writes a task's record to the state file.
+ * The last step of task might be local, hence remote cannot always save stack
+ * output by itself. Easier to always have local re-send it alongside other
+ * data.
+ */
+interface Commit extends SessionEvent {
+    type: 'commit';
+    id: string;
+    record: TaskRecord;
+}
+
+/**
+ * Local->remote. Ends the session once pending commits have been written.
+ */
+interface CloseSession extends SessionEvent {
     type: 'closeSession';
 }
 
 /**
- * Apply-phase event (i.e. has a session, WRITES changes to remote).
+ * Remote->local. Reply to CloseSession. Error lists failed commits, if any.
  */
-export type ApplyEvent =
+interface SessionClosed extends SessionEvent {
+    type: 'sessionClosed';
+    error?: string;
+}
+
+export type StepStatus = 'started' | 'done' | 'error';
+
+export type SessionRequest =
     | OpenSession
     | LoadHandlers
-    | Ready
     | Run
-    | Done
+    | Commit
     | CloseSession;
 
-export type Event = Hello | Plan | PlanResult | ApplyEvent;
-
-export type StepStatus = 'started' | 'done' | 'error' | 'unchanged';
+export type Event =
+    | Hello
+    | Settings
+    | Plan
+    | PlanResult
+    | SessionRequest
+    | Ready
+    | Done
+    | SessionClosed;
 
 export async function* readEvents(
     stream: ReadableStream<Uint8Array>,

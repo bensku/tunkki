@@ -1,6 +1,8 @@
+import * as builder from '../../builder';
+import type { Task } from '../../task';
 import { makeColor } from '../colors';
 import { err, out, printJson } from '../output';
-import { buildTasksByHost, type CliContext } from './plan';
+import type { CliContext } from './plan';
 
 export async function run(ctx: CliContext): Promise<number> {
     if (ctx.hosts.length === 0) {
@@ -8,7 +10,14 @@ export async function run(ctx: CliContext): Promise<number> {
         return 2;
     }
 
-    const tasksByHost = buildTasksByHost(ctx.hosts);
+    await builder.loadTasks(ctx.hosts);
+    const tasksByHost = new Map<string, Task[]>();
+    for (const task of builder.tasks) {
+        tasksByHost.set(task.host, [
+            ...(tasksByHost.get(task.host) ?? []),
+            task,
+        ]);
+    }
     const flags = ctx.cli.flags;
     const includeState = flags.logLevel <= 1;
     const showInternal = flags.logLevel <= 1;
@@ -25,7 +34,7 @@ export async function run(ctx: CliContext): Promise<number> {
                             const base: Record<string, unknown> = {
                                 id: t.id,
                                 type: t.type,
-                                after: t.after ?? [],
+                                deps: t.deps,
                             };
                             if (includeState) base.state = t.state;
                             return base;
@@ -53,11 +62,11 @@ export async function run(ctx: CliContext): Promise<number> {
         const typeWidth = Math.max(4, ...tasks.map((t) => t.type.length));
         out(
             c.dim(
-                `  ${'id'.padEnd(idWidth)}  ${'type'.padEnd(typeWidth)}  after`,
+                `  ${'id'.padEnd(idWidth)}  ${'type'.padEnd(typeWidth)}  deps`,
             ),
         );
         for (const t of tasks) {
-            const dep = (t.after ?? []).join(', ');
+            const dep = t.deps.join(', ');
             out(
                 `  ${t.id.padEnd(idWidth)}  ${t.type.padEnd(typeWidth)}  ${c.dim(dep)}`,
             );

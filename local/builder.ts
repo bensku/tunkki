@@ -1,22 +1,35 @@
 import type { Host } from '@bensku/tunkki';
 import { log } from '../common/log';
 import type { TaskOptions } from '../task';
-import type { Task, TaskSource } from './task';
+import { findRefs, replaceRefs } from './outputs';
+import type { Task } from './task';
 import { validateTasks } from './validate';
+
+/**
+ * Adds tasks for a host and returns their ids.
+ */
+export type TaskSource = (host: Host) => Promise<string[]>;
 
 /**
  * Task sources. Filled BEFORE deploy() has been called!
  */
-const taskSources: TaskSource[] = [];
+const taskSources: { load: TaskSource; rolling: boolean }[] = [];
 
-export function addSource(src: TaskSource) {
-    taskSources.push(src);
+export function addSource(load: TaskSource, rolling: boolean) {
+    taskSources.push({ load, rolling });
 }
 
 /**
- * Tasks by their host. Filled DURING deploy()!
+ * Tasks of all hosts. Filled by loadTasks().
  */
 export const tasks: Task[] = [];
+
+/**
+ * Rolling blocks. Each block lists ids of its tasks per host, in host order.
+ * Hosts without tasks in the block are left out. Filled by loadTasks().
+ */
+export const rollingBlocks: string[][][] = [];
+
 const idStack: string[] = [];
 let currentHost: string | null = null;
 
@@ -27,36 +40,30 @@ let currentHost: string | null = null;
 export function clearAll() {
     taskSources.length = 0;
     tasks.length = 0;
+    rollingBlocks.length = 0;
     idStack.length = 0;
     currentHost = null;
 }
 
 export function addTask(
     id: string,
-    task: string,
+    type: string,
     state: unknown,
     opts: TaskOptions,
-) {
+): Task {
     if (!currentHost) {
         throw new Error('cannot add tasks outside on(...) block');
     }
-    const after = opts.after ? [...opts.after] : [];
-    const onChanged = opts.onChanged ? [...opts.onChanged] : [];
-    if (opts.dependsOn) {
-        after.push(...opts.dependsOn);
-        onChanged.push(...opts.dependsOn);
-    }
-    const t = {
+    const task: Task = {
         id,
         host: currentHost,
+        type,
         state,
-        type: task,
-        after,
-        onChanged,
-        localData: {} as { host: Host },
+        deps: [...(opts.dependencies ?? [])],
+        requireReapply: opts.requireReapply ?? false,
     };
-    tasks.push(t);
-    return t;
+    tasks.push(task);
+    return task;
 }
 
 export function enterHost(hostId: string): number {
@@ -88,6 +95,8 @@ export function qualifyId(id: string) {
 }
 
 export async function loadTasks(hosts: Host[]) {
+    tasks.length = 0;
+    rollingBlocks.length = 0;
     log.info(
         'loading task sources',
         'sources',
@@ -95,27 +104,32 @@ export async function loadTasks(hosts: Host[]) {
         'hosts',
         hosts.length,
     );
-    // Sources are run sequentially because enterHost/exitHost mutate global
-    // state — two sources racing on the same host would collide.
+    // Sources are run sequentially because enterHost/exitHost mutate global state
+    // Two sources racing on the same host would collide!
     for (const [sourceIndex, src] of taskSources.entries()) {
         const source = `${sourceIndex + 1}/${taskSources.length}`;
-        log.info('loading task source', source);
-        let prev: Task | undefined;
+        const block: string[][] = [];
         for (const host of hosts) {
-            const taskCount = tasks.length;
             log.info('loading task source', source, 'host', host.id);
-            prev = await src(host, prev);
-            log.debug(
-                'loaded task source',
-                source,
-                'host',
-                host.id,
-                'tasksAdded',
-                tasks.length - taskCount,
-            );
+            const ids = await src.load(host);
+            log.debug('loaded task source', source, 'host', host.id, ids);
+            if (ids.length > 0) {
+                block.push(ids);
+            }
         }
-        log.info('loaded task source', source);
+        if (src.rolling && block.length > 1) {
+            rollingBlocks.push(block);
+        }
     }
+
+    // Output proxies may have been placed in state after tasks were added,
+    // so they can only be replaced now
+    for (const task of tasks) {
+        task.state = replaceRefs(task.state);
+        const refs = findRefs(task.state).map((ref) => ref.id);
+        task.deps = [...new Set([...task.deps, ...refs])];
+    }
+
     log.info('validating tasks', 'count', tasks.length);
     validateTasks(tasks);
     log.info('validated tasks successfully');

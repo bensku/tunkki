@@ -1,6 +1,5 @@
-import type { ConnectionEvent, Result } from '../..';
-import type { Event, Plan } from '../runner';
-import type { Task } from '../task';
+import type { ConnectionEvent, Event, Plan, Result } from '../..';
+import { substituteState } from '../outputs';
 import { type Colorizer, makeColor } from './colors';
 import { renderDiff, renderValue } from './diff';
 
@@ -30,98 +29,152 @@ export function section(c: Colorizer, title: string): void {
     );
 }
 
+/**
+ * Ids of internal $noop tasks, which are hidden unless verbose.
+ */
+export function noopIds(plan: Plan): Set<string> {
+    return new Set(
+        Object.values(plan.nodes)
+            .filter(
+                (node) =>
+                    node.task.type === '$noop' ||
+                    plan.old[node.task.id]?.handler === '$noop',
+            )
+            .map((node) => node.task.id),
+    );
+}
+
+/**
+ * Changes to show to the user, by host.
+ */
+export function visibleChanges(plan: Plan, hidden: Set<string>) {
+    const byHost = (ids: string[], host: string) =>
+        ids
+            .filter(
+                (id) => !hidden.has(id) && plan.nodes[id]?.task.host === host,
+            )
+            .sort();
+    return Object.keys(plan.hosts).map((host) => ({
+        host,
+        created: byHost(plan.created, host),
+        updated: byHost(plan.updated, host),
+        maybe: byHost(plan.uncertain, host),
+        replaced: byHost(plan.replaced, host),
+        deleted: byHost(plan.deleted, host),
+        unchanged: byHost(plan.unchanged, host),
+    }));
+}
+
+/**
+ * Number of changes the user would see.
+ */
+export function countChanges(plan: Plan, hidden: Set<string>): number {
+    return visibleChanges(plan, hidden).reduce(
+        (n, host) =>
+            n +
+            host.created.length +
+            host.updated.length +
+            host.maybe.length +
+            host.replaced.length +
+            host.deleted.length,
+        0,
+    );
+}
+
+/**
+ * Whether applying the plan would do anything, including hidden work.
+ */
+export function hasWork(plan: Plan): boolean {
+    return (
+        plan.unchanged.length < Object.keys(plan.nodes).length ||
+        plan.refresh.length > 0
+    );
+}
+
+/**
+ * Input of a task with outputs substituted where they are known.
+ */
+function resolvedState(plan: Plan, id: string): unknown {
+    const state = plan.nodes[id]?.task.state;
+    try {
+        return substituteState(state, (ref) => plan.old[ref]?.output).value;
+    } catch {
+        return state;
+    }
+}
+
 export function printPlan(
-    plans: Plan[],
-    tasksByHost: Map<string, Task[]>,
+    plan: Plan,
     opts: OutputOptions,
-    hiddenIds?: Set<string>,
+    hidden: Set<string>,
 ): void {
     const c = makeColor(opts.color);
-    const isHidden = (id: string) => hiddenIds?.has(id) ?? false;
-    let totalAdd = 0;
-    let totalChange = 0;
-    let totalDestroy = 0;
+    const typeOf = (id: string) => c.dim(`(${plan.nodes[id]?.task.type})`);
+    const oldState = (id: string) => plan.old[id]?.state;
+    const totals = { add: 0, change: 0, maybe: 0, replace: 0, destroy: 0 };
 
-    for (const plan of plans) {
-        const tasks = tasksByHost.get(plan.host.id) ?? [];
-        const taskById = new Map(tasks.map((t) => [t.id, t]));
-
-        const entries: { id: string; line: string; body?: string[] }[] = [];
-
-        const labelFor = (task: Task | undefined): string => {
-            if (!task) return '';
-            const parts = [c.dim(`(${task.type})`)];
-            return parts.join(' ');
-        };
-
-        for (const id of [...plan.created].sort()) {
-            if (isHidden(id)) continue;
-            const task = taskById.get(id);
+    for (const changes of visibleChanges(plan, hidden)) {
+        const entries: { line: string; body?: string[] }[] = [];
+        for (const id of changes.created) {
             entries.push({
-                id,
-                line: `  ${c.green('+')} ${id} ${labelFor(task)}`.trimEnd(),
-                body:
-                    task !== undefined
-                        ? renderDiff(undefined, task.state, c, 4)
-                        : undefined,
+                line: `  ${c.green('+')} ${id} ${typeOf(id)}`,
+                body: renderDiff(undefined, resolvedState(plan, id), c, 4),
             });
-            totalAdd++;
+            totals.add++;
         }
-
-        for (const upd of [...plan.updated].sort((a, b) =>
-            a.id.localeCompare(b.id),
-        )) {
-            if (isHidden(upd.id)) continue;
-            const task = taskById.get(upd.id);
-            const newState = task?.state;
+        for (const id of changes.updated) {
             entries.push({
-                id: upd.id,
-                line: `  ${c.yellow('~')} ${upd.id} ${labelFor(task)}`.trimEnd(),
-                body: renderDiff(upd.oldState, newState, c, 4),
+                line: `  ${c.yellow('~')} ${id} ${typeOf(id)}`,
+                body: renderDiff(oldState(id), resolvedState(plan, id), c, 4),
             });
-            totalChange++;
+            totals.change++;
         }
-
-        for (const del of [...plan.deleted].sort((a, b) =>
-            a.id.localeCompare(b.id),
-        )) {
-            if (isHidden(del.id)) continue;
+        for (const id of changes.maybe) {
             entries.push({
-                id: del.id,
-                line: `  ${c.red('-')} ${del.id}`,
-                body: renderDiff(del.oldState, undefined, c, 4),
+                line: `  ${c.yellow('?')} ${id} ${typeOf(id)} ${c.dim('may change with its deps')}`,
             });
-            totalDestroy++;
+            totals.maybe++;
         }
-
+        for (const id of changes.replaced) {
+            const oldType = plan.old[id]?.handler;
+            entries.push({
+                line: `  ${c.yellow('±')} ${id} ${c.dim(`(${oldType} → ${plan.nodes[id]?.task.type})`)}`,
+                body: renderDiff(oldState(id), resolvedState(plan, id), c, 4),
+            });
+            totals.replace++;
+        }
+        for (const id of changes.deleted) {
+            entries.push({
+                line: `  ${c.red('-')} ${id} ${typeOf(id)}`,
+                body: renderDiff(oldState(id), undefined, c, 4),
+            });
+            totals.destroy++;
+        }
         if (opts.showUnchanged) {
-            for (const id of [...plan.unchanged].sort()) {
-                if (isHidden(id)) continue;
-                entries.push({
-                    id,
-                    line: `${c.dim(`  = ${id}`)}`,
-                });
+            for (const id of changes.unchanged) {
+                entries.push({ line: c.dim(`  = ${id}`) });
             }
         }
 
-        out(c.bold(`host ${plan.host.id}`));
+        out(c.bold(`host ${changes.host}`));
         if (entries.length === 0) {
             out(c.dim('  (no changes)'));
-        } else {
-            for (const e of entries) {
-                out(e.line);
-                if (e.body) {
-                    for (const bl of e.body) out(bl);
-                }
+        }
+        for (const entry of entries) {
+            out(entry.line);
+            for (const line of entry.body ?? []) {
+                out(line);
             }
         }
         out('');
     }
 
     out(
-        `Plan: ${c.green(`${totalAdd} to add`)}, ` +
-            `${c.yellow(`${totalChange} to change`)}, ` +
-            `${c.red(`${totalDestroy} to destroy`)}.`,
+        `Plan: ${c.green(`${totals.add} to add`)}, ` +
+            `${c.yellow(`${totals.change} to change`)}, ` +
+            `${c.yellow(`${totals.replace} to replace`)}, ` +
+            `${c.red(`${totals.destroy} to destroy`)}, ` +
+            `${c.yellow(`${totals.maybe} may change`)}.`,
     );
 }
 
@@ -135,6 +188,9 @@ export function liveProgress(event: Event, opts: OutputOptions): void {
         switch (event.status) {
             case 'done':
                 icon = c.green('✓');
+                break;
+            case 'unchanged':
+                icon = c.dim('=');
                 break;
             case 'error':
                 icon = c.red('✗');
@@ -181,13 +237,15 @@ export function connectionProgress(
 export function printSummary(results: Result[], opts: OutputOptions): void {
     const c = makeColor(opts.color);
     let totalDone = 0;
+    let totalUnchanged = 0;
     let totalSkipped = 0;
     let totalErrored = 0;
 
     for (const r of results) {
         totalDone += r.completed.length;
+        totalUnchanged += r.unchanged.length;
         totalSkipped += r.skipped.length;
-        totalErrored += r.errored.length;
+        totalErrored += r.errored.length + (r.error ? 1 : 0);
     }
 
     if (totalErrored > 0) {
@@ -197,6 +255,9 @@ export function printSummary(results: Result[], opts: OutputOptions): void {
             for (const e of r.errored) {
                 out(`  ${c.dim(`[${r.host}]`)} ${c.red(e.taskId)}: ${e.error}`);
             }
+            if (r.error) {
+                out(`  ${c.dim(`[${r.host}]`)} ${r.error}`);
+            }
         }
     }
 
@@ -204,6 +265,7 @@ export function printSummary(results: Result[], opts: OutputOptions): void {
     out(
         `${c.bold('Apply complete:')}` +
             ` ${c.green(`${totalDone} done`)}, ` +
+            `${c.dim(`${totalUnchanged} unchanged`)}, ` +
             `${c.dim(`${totalSkipped} skipped`)}, ` +
             `${c.red(`${totalErrored} errored`)}` +
             ` across ${results.length} host(s).`,

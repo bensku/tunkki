@@ -28,7 +28,7 @@ export const setup = combine<SetupState, Output>((state, opts) => {
             remotePath: '/usr/bin/nebula-cert',
             mode: 0o755,
         },
-        { ...opts, after: [daemonFile.id] },
+        { ...opts, dependencies: [daemonFile.id] },
     );
 });
 
@@ -70,7 +70,11 @@ export const netavarkSetup = combine<SetupState, Output>((state, opts) => {
                 wantedBy: 'multi-user.target',
             },
         },
-        { ...opts, dependsOn: [daemonFile.id, pluginFile.id] },
+        {
+            ...opts,
+            dependencies: [daemonFile.id, pluginFile.id],
+            requireReapply: true,
+        },
     );
 
     // Create podman network unless it already existed
@@ -81,7 +85,7 @@ export const netavarkSetup = combine<SetupState, Output>((state, opts) => {
             driver: 'nebula',
             networkDeleteOnStop: true,
         },
-        { ...opts, after: [svc.id] },
+        { ...opts, dependencies: [svc.id] },
     );
 });
 

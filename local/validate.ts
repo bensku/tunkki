@@ -1,27 +1,22 @@
 import type { Task } from './task';
 
 export function validateTasks(tasks: Task[]) {
-    const taskIds = new Set(tasks.map((task) => task.id));
+    const taskIds = new Set<string>();
     for (const task of tasks) {
-        for (const dep of task.after) {
-            if (dep === task.id) {
-                throw new Error(
-                    `task ${task.id} tried to reference itself in after`,
-                );
-            } else if (!taskIds.has(dep)) {
-                throw new Error(
-                    `task ${task.id} tried to reference nonexistent task ${dep} in after`,
-                );
-            }
+        if (taskIds.has(task.id)) {
+            throw new Error(`task id ${task.id} is used more than once`);
         }
-        for (const dep of task.onChanged ?? []) {
+        taskIds.add(task.id);
+    }
+    for (const task of tasks) {
+        for (const dep of task.deps) {
             if (dep === task.id) {
                 throw new Error(
-                    `task ${task.id} tried to reference itself in onChanged`,
+                    `task ${task.id} depends on itself or its own outputs`,
                 );
             } else if (!taskIds.has(dep)) {
                 throw new Error(
-                    `task ${task.id} tried to reference nonexistent task ${dep} in onChanged`,
+                    `task ${task.id} depends on nonexistent task ${dep}`,
                 );
             }
         }

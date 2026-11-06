@@ -1,245 +1,173 @@
-import * as fs from 'node:fs/promises';
-import type { ApplyEvent } from '../common/event';
-import type { TaskHandler } from '../common/task';
-import { loadState } from './state';
-import { reply, Semaphore } from './util';
+import type { Event, TaskRecord } from '../common/event';
+import { log } from '../common/log';
+import { stepsOf, type TaskHandler } from '../common/task';
+import { loadState, type State } from './state';
+import { type Reply, Semaphore } from './util';
 
-export interface Session {
-    handleEvent(event: ApplyEvent): void;
+type RunEvent = Extract<Event, { type: 'run' }>;
+
+export interface SessionOptions {
+    id: string;
+    stateDir: string;
+    concurrency: number;
+    reply: Reply;
 }
 
 /**
- * Starts a new session that can apply changes to this machine.
- * @param session Session id.
- * @param stack Stack this session will operate on.
- * @param concurrency Max number of tasks executing concurrently.
- * @returns Session.
+ * Opens an apply session.
+ * @param opts Session options.
+ * @param stateHash Hash of the state file that local planned against.
+ * @throws If the state file has changed since then.
  */
-export async function newSession(
-    session: string,
-    stack: string,
-    concurrency: number,
+export async function openSession(
+    opts: SessionOptions,
+    stateHash: string,
 ): Promise<Session> {
-    // Load this remote's state
-    const stateDir = `/opt/tunkki/${stack}`;
-    await fs.mkdir(stateDir, { recursive: true });
-    const state = await loadState(stateDir);
-
-    const handlers: Record<string, TaskHandler> = {
-        // TODO consider if we even need no-op handler anymore
-        $noop: {
-            apply: {
-                handler: () => Promise.resolve(),
-                location: 'remote',
-            },
-        },
-    };
-
-    const taskSemaphore = new Semaphore(concurrency);
-
-    const applyTask = async (
-        handler: TaskHandler,
-        id: string,
-        step: number,
-        taskState: unknown,
-    ): Promise<unknown> => {
-        const apply = Array.isArray(handler.apply)
-            ? handler.apply[step]
-            : handler.apply;
-        if (!apply) {
-            reply({
-                type: 'done',
-                session,
-                id,
-                status: 'error',
-                output: `missing step ${step}`,
-            });
-            return;
-        }
-        const stepCount = Array.isArray(handler.apply)
-            ? handler.apply.length
-            : 1;
-
-        // Execute task as soon as we can
-        const release = await taskSemaphore.acquire();
-        try {
-            reply({
-                type: 'done',
-                session,
-                id,
-                status: 'started',
-                output: null,
-            });
-
-            // If this is first step, dig old state so it can perhaps apply changes more "gracefully"
-            const oldState = step === 0 ? state.input(id) : undefined;
-            const output = await apply.handler(taskState, undefined, oldState); // Invoke handler
-
-            // Save input if this is first or output if this is the last step
-            if (step === 0) {
-                await state.setInput(id, taskState);
-            } else if (step === stepCount - 1) {
-                await state.setOutput(id, output);
-            }
-            return output;
-        } catch (e) {
-            reply({
-                type: 'done',
-                session,
-                id,
-                status: 'error',
-                output: Bun.inspect(e),
-            });
-        } finally {
-            release();
-        }
-    };
-
-    const cleanupTask = async (handler: TaskHandler, id: string) => {
-        const cleanup = handler.cleanup;
-        const release = await taskSemaphore.acquire();
-        try {
-            reply({
-                type: 'done',
-                session,
-                id,
-                status: 'started',
-                output: null,
-            });
-
-            if (cleanup) {
-                await cleanup(state.input(id));
-            }
-            await state.delete(id);
-        } catch (e) {
-            reply({
-                type: 'done',
-                session,
-                id,
-                status: 'error',
-                output: Bun.inspect(e),
-            });
-        } finally {
-            release();
-        }
-    };
-
-    return {
-        async handleEvent(event) {
-            switch (event.type) {
-                // open and close are handled by runner!
-                case 'loadHandlers': {
-                    let error: string | undefined;
-                    try {
-                        // Handlers are self-contained base64 URLs
-                        for (const [id, code] of Object.entries(
-                            event.handlers,
-                        )) {
-                            handlers[id] = await import(code);
-                        }
-                    } catch (e) {
-                        error = Bun.inspect(e);
-                    }
-                    // Let local know we've loaded handlers or died trying
-                    reply({
-                        type: 'ready',
-                        session,
-                        error,
-                    });
-                    break;
-                }
-                case 'run': {
-                    // Locate this task's handler that SHOULD have been uploaded to us (see above)
-                    const handler = handlers[event.task];
-                    if (!handler) {
-                        reply({
-                            type: 'done',
-                            session,
-                            id: event.id,
-                            status: 'error',
-                            output: 'missing handler',
-                        });
-                        return;
-                    }
-
-                    if (event.state === undefined) {
-                        await cleanupTask(handler, event.id);
-                        reply({
-                            type: 'done',
-                            session,
-                            id: event.id,
-                            status: 'done',
-                            output: null,
-                        });
-                    } else {
-                        // TODO we need to somehow duplicate this logic on local side, in case first step runs there (tricky!)
-                        if (event.step === 0) {
-                            // Substitute values that were not known plan-time
-                            const input =
-                                event.step === 0
-                                    ? substituteState(event.state, event.replacements)
-                                    : event.state;
-                            if (
-                                !event.force &&
-                                Bun.deepEquals(input, state.input(event.id))
-                            ) {
-                                // Unchanged. Probably, some dependency of us changed, but its outputs stayed same by chance
-                                reply({
-                                    type: 'done',
-                                    session,
-                                    id: event.id,
-                                    status: 'unchanged',
-                                    output: null,
-                                });
-                            } else {
-                                // Apply as usual
-                                const output = await applyTask(
-                                    handler,
-                                    event.id,
-                                    event.step,
-                                    input,
-                                );
-                                reply({
-                                    type: 'done',
-                                    session,
-                                    id: event.id,
-                                    status: 'done',
-                                    output,
-                                });
-                            }
-                        } else {
-                            // Not first step, we've already checked if this should execute before!
-                            const output = await applyTask(
-                                handler,
-                                event.id,
-                                event.step,
-                                event.state,
-                            );
-                            reply({
-                                type: 'done',
-                                session,
-                                id: event.id,
-                                status: 'done',
-                                output,
-                            });
-                        }
-                    }
-                    break;
-                }
-                case 'done': {
-                    // Local is letting us know it has finished a task
-                    // Persist output here!
-                    state.setOutput(event.id, event.output);
-                }
-            }
-        },
-    };
+    const state = await loadState(opts.stateDir);
+    if (state.hash !== stateHash) {
+        throw new Error(
+            'state has changed since the plan was made, please plan again',
+        );
+    }
+    return new Session(opts, state);
 }
 
-function substituteState(
-    state: unknown,
-    subs: Record<string, unknown>,
-): unknown {
-    // TODO implement
-    return null;
+/**
+ * Executes steps and records state on behalf of local. Methods that do work
+ * reply to local themselves, so callers don't need to await them.
+ */
+export class Session {
+    #id: string;
+    #reply: Reply;
+    #state: State;
+    #slots: Semaphore;
+    #handlers: Record<string, TaskHandler> = {};
+    #pending = new Set<Promise<void>>();
+    #commitErrors: string[] = [];
+
+    constructor(opts: SessionOptions, state: State) {
+        this.#id = opts.id;
+        this.#reply = opts.reply;
+        this.#state = state;
+        this.#slots = new Semaphore(opts.concurrency);
+    }
+
+    /**
+     * Imports handlers from data URLs. Replies with ready.
+     */
+    async loadHandlers(handlers: Record<string, string>) {
+        let error: string | undefined;
+        try {
+            for (const [type, url] of Object.entries(handlers)) {
+                this.#handlers[type] = await import(url);
+            }
+        } catch (e) {
+            error = Bun.inspect(e);
+        }
+        this.#reply({ type: 'ready', session: this.#id, error });
+    }
+
+    /**
+     * Runs a step or a cleanup. Replies with done.
+     */
+    run(event: RunEvent) {
+        this.#track(this.#run(event));
+    }
+
+    /**
+     * Writes a record. Failures are reported when the session closes.
+     */
+    commit(id: string, record: TaskRecord) {
+        this.#track(
+            this.#state.commit(id, record).catch((e) => {
+                log.error('commit failed', 'task', id, 'error', e);
+                this.#commitErrors.push(`${id}: ${Bun.inspect(e)}`);
+            }),
+        );
+    }
+
+    /**
+     * Waits for pending work. Replies with sessionClosed.
+     */
+    async close() {
+        while (this.#pending.size > 0) {
+            await Promise.all(this.#pending);
+        }
+        this.#reply({
+            type: 'sessionClosed',
+            session: this.#id,
+            error:
+                this.#commitErrors.length > 0
+                    ? `failed to commit:\n${this.#commitErrors.join('\n')}`
+                    : undefined,
+        });
+    }
+
+    #track(promise: Promise<void>) {
+        const tracked = promise
+            .catch((e) => log.error('internal error', e))
+            .finally(() => this.#pending.delete(tracked));
+        this.#pending.add(tracked);
+    }
+
+    async #run(event: RunEvent) {
+        const release = await this.#slots.acquire();
+        try {
+            this.#done(event.id, 'started', null);
+            const output =
+                event.state === undefined
+                    ? await this.#cleanup(event.task, event.id)
+                    : await this.#step(event);
+            this.#done(event.id, 'done', output);
+        } catch (e) {
+            log.error(
+                'step failed',
+                'task',
+                event.id,
+                'step',
+                event.step,
+                'error',
+                e,
+            );
+            this.#done(event.id, 'error', Bun.inspect(e));
+        } finally {
+            release();
+        }
+    }
+
+    async #cleanup(type: string, id: string) {
+        const record = this.#state.records[id];
+        // $noop has no handler, and nothing to clean up
+        if (record && type !== '$noop') {
+            await this.#handler(type).cleanup?.(record.state);
+        }
+        await this.#state.delete(id);
+        log.info('cleaned up', 'task', id);
+    }
+
+    async #step(event: RunEvent) {
+        const step = stepsOf(this.#handler(event.task))[event.step];
+        if (step?.location !== 'remote') {
+            throw new Error(
+                `task type ${event.task} has no remote step ${event.step}`,
+            );
+        }
+        const oldState =
+            event.step === 0 ? this.#state.records[event.id]?.state : undefined;
+        const output = await step.handler(event.state, undefined, oldState);
+        log.info('executed step', 'task', event.id, 'step', event.step);
+        return output;
+    }
+
+    #handler(type: string): TaskHandler {
+        const handler = this.#handlers[type];
+        if (!handler) {
+            throw new Error(`handler for ${type} was not loaded`);
+        }
+        return handler;
+    }
+
+    #done(id: string, status: 'started' | 'done' | 'error', output: unknown) {
+        this.#reply({ type: 'done', session: this.#id, id, status, output });
+    }
 }

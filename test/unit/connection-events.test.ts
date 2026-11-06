@@ -1,15 +1,22 @@
 import { describe, expect, test } from 'bun:test';
 import type { FileSink } from 'bun';
 import { type ConnectionEvent, connect, type Host } from '../..';
+import { type Event, writeEvent } from '../../common/event';
 import type { Connector } from '../../protocol';
 
-function successfulConnector(): Connector {
+/**
+ * Connector to an agent that only says hello.
+ */
+function successfulConnector(
+    hello: Event = { type: 'hello', protocol: 1 },
+): Connector {
     return {
         upload: async () => false,
         connect: async () => ({
-            in: {} as FileSink,
+            in: { write: () => 0 } as unknown as FileSink,
             out: new ReadableStream<Uint8Array>({
                 start(controller) {
+                    controller.enqueue(writeEvent(hello));
                     controller.close();
                 },
             }),
@@ -57,5 +64,20 @@ describe('connection events', () => {
             { host, type: 'started' },
             { host, type: 'completed', status: 'error', error },
         ]);
+    });
+
+    test('rejects agents that speak another protocol', async () => {
+        const host: Host = {
+            id: 'old',
+            conn: successfulConnector({ type: 'hello', protocol: 0 }),
+        };
+        const failure = await connect([host]).catch((e) => e);
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect(failure.errors[0].message).toContain(
+            'incompatible agent on old, run install-agent',
+        );
+        expect(failure.errors[0].cause.message).toContain(
+            'agent uses protocol v0, but v1 is required',
+        );
     });
 });

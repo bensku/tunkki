@@ -22,125 +22,92 @@ async function roundTrip(event: Event): Promise<Event> {
 }
 
 describe('binary protocol round-trip', () => {
-    test('hello', async () => {
-        const ev: Event = { type: 'hello', protocol: 0 };
-        expect(await roundTrip(ev)).toEqual(ev);
-    });
-
-    test('settings', async () => {
-        const ev: Event = {
-            type: 'settings',
+    const events: Event[] = [
+        { type: 'hello', protocol: 1 },
+        { type: 'settings', logLevel: 1 },
+        { type: 'plan', stack: 'prod' },
+        {
+            type: 'planResult',
+            stack: 'prod',
+            tasks: {
+                'h1.svc': {
+                    handler: 'systemd.service',
+                    state: { name: 'svc', exec: ['/bin/echo', 'hi'] },
+                    output: { pid: 1 },
+                    deps: ['h1.file'],
+                },
+            },
+            stateHash: 'abc',
+        },
+        {
+            type: 'openSession',
+            session: 's',
             stack: 'prod',
             concurrency: 4,
-            logLevel: 1,
-        };
-        expect(await roundTrip(ev)).toEqual(ev);
-    });
-
-    test('uploadHandlers preserves multi-line TS source verbatim', async () => {
-        const ev: Event = {
-            type: 'uploadHandlers',
-            handlers: {
-                'systemd.service': "import { $ } from 'bun';\n// comment\n",
-                'podman.pod': 'export const apply = () => {};\n',
-            },
-        };
-        expect(await roundTrip(ev)).toEqual(ev);
-    });
-
-    test('task with structured state', async () => {
-        const ev: Event = {
-            type: 'task',
-            id: 'web.frontend',
-            taskType: 'systemd.service',
-            state: { name: 'frontend', exec: ['/bin/echo', 'hi'], port: 80 },
-        };
-        expect(await roundTrip(ev)).toEqual(ev);
-    });
-
-    test('task with reapply=true survives the round-trip', async () => {
-        // reapply asks the remote to assume changed even when state matches.
-        const ev: Event = {
-            type: 'task',
-            id: 'web.frontend',
-            taskType: 'systemd.service',
-            state: { name: 'frontend' },
-            reapply: true,
-        };
-        expect(await roundTrip(ev)).toEqual(ev);
-    });
-
-    test('task with undefined state survives the round-trip', async () => {
-        // undefined-state means "delete this task" on the wire.
-        const ev: Event = {
-            type: 'task',
-            id: 'gone',
-            taskType: 'systemd.service',
-            state: undefined,
-        };
-        expect(await roundTrip(ev)).toEqual(ev);
-    });
-
-    test('tasksSent', async () => {
-        const ev: Event = { type: 'tasksSent' };
-        expect(await roundTrip(ev)).toEqual(ev);
-    });
-
-    test('status with each variant', async () => {
-        for (const status of [
-            'created',
-            'updated',
-            'deleted',
-            'unchanged',
-        ] as const) {
-            const ev: Event = {
-                type: 'status',
-                id: 'web.frontend',
-                status,
-                oldInputs: status === 'created' ? undefined : { name: 'old' },
-            };
-            expect(await roundTrip(ev)).toEqual(ev);
-        }
-    });
-
-    test('ready', async () => {
-        const ev: Event = { type: 'ready' };
-        expect(await roundTrip(ev)).toEqual(ev);
-    });
-
-    test('run', async () => {
-        const ev: Event = {
+            stateHash: 'abc',
+        },
+        {
+            type: 'loadHandlers',
+            session: 's',
+            handlers: { 'podman.pod': 'data:text/javascript;base64,AAAA' },
+        },
+        { type: 'ready', session: 's', error: 'oops' },
+        {
             type: 'run',
-            id: 'web.frontend',
-            step: 2,
-            state: { intermediate: true },
-        };
-        expect(await roundTrip(ev)).toEqual(ev);
-    });
+            session: 's',
+            task: 'files.put',
+            id: 'h1.file',
+            step: 1,
+            state: { data: new Uint8Array([1, 2, 3]) },
+        },
+        {
+            type: 'run',
+            session: 's',
+            task: 'files.put',
+            id: 'h1.file',
+            step: 0,
+            state: undefined,
+        },
+        {
+            type: 'done',
+            session: 's',
+            id: 'h1.file',
+            status: 'done',
+            output: 1,
+        },
+        {
+            type: 'commit',
+            session: 's',
+            id: 'h1.file',
+            record: { handler: 'files.put', state: {}, deps: [] },
+        },
+        { type: 'closeSession', session: 's' },
+        { type: 'sessionClosed', session: 's' },
+    ];
+    for (const event of events) {
+        test(event.type, async () => {
+            expect(await roundTrip(event)).toEqual(event);
+        });
+    }
 
-    test('done with each status', async () => {
-        for (const status of ['done', 'error', 'skipped'] as const) {
-            const ev: Event = {
-                type: 'done',
-                id: 'x',
-                status,
-                output: status === 'error' ? 'boom' : { ok: true },
-            };
-            expect(await roundTrip(ev)).toEqual(ev);
-        }
-    });
-
-    test('reset', async () => {
-        const ev: Event = { type: 'reset' };
-        expect(await roundTrip(ev)).toEqual(ev);
+    test('undefined run state stays undefined', async () => {
+        const decoded = await roundTrip({
+            type: 'run',
+            session: 's',
+            task: 't',
+            id: 'x',
+            step: 0,
+            state: undefined,
+        });
+        expect(decoded).toHaveProperty('state', undefined);
     });
 });
 
 describe('framing', () => {
     test('multiple frames in a single chunk are decoded as separate events', async () => {
-        const a: Event = { type: 'hello', protocol: 0 };
-        const b: Event = { type: 'tasksSent' };
-        const c: Event = { type: 'ready' };
+        const a: Event = { type: 'hello', protocol: 1 };
+        const b: Event = { type: 'plan', stack: 'prod' };
+        const c: Event = { type: 'closeSession', session: 's' };
 
         const ba = writeEvent(a);
         const bb = writeEvent(b);
@@ -159,10 +126,10 @@ describe('framing', () => {
         // Stress the buffer-merge path: cut the same frame at every byte
         // offset and assert it still decodes to the original event.
         const ev: Event = {
-            type: 'task',
+            type: 'commit',
+            session: 's',
             id: 'web.frontend',
-            taskType: 'systemd.service',
-            state: { description: 'split-me', n: 42 },
+            record: { handler: 'systemd.service', state: { n: 42 } },
         };
         const buf = writeEvent(ev);
 
@@ -179,7 +146,7 @@ describe('framing', () => {
     });
 
     test('a chunk that ends mid-length-prefix is buffered and resumes on the next chunk', async () => {
-        const ev: Event = { type: 'ready' };
+        const ev: Event = { type: 'ready', session: 's' };
         const buf = writeEvent(ev);
         // Cut inside the 4-byte length header (after 2 bytes).
         const decoded = await collect(
@@ -196,7 +163,7 @@ describe('framing', () => {
     });
 
     test('writeEvent prefixes a 4-byte big-endian length', async () => {
-        const buf = writeEvent({ type: 'ready' });
+        const buf = writeEvent({ type: 'ready', session: 's' });
         const declared = new DataView(buf.buffer, buf.byteOffset, 4).getUint32(
             0,
         );

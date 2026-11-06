@@ -1,156 +1,130 @@
-import { log } from '../common/log';
-import type { Event } from './runner';
-import type { Task } from './task';
+import type { Barrier, Plan } from './plan';
 
-interface Node {
-    task: Task;
-    dependents: string[];
+export type TaskResult = 'done' | 'unchanged' | 'error' | 'skipped';
 
-    doneDeps: number;
-    status: 'created' | 'started' | 'done' | 'error' | 'skipped';
+export interface SchedulerCallbacks {
+    /**
+     * Starts a task. The caller reports its result with finish().
+     * @param depApplied Whether a task in its deps finished as done.
+     */
+    run(id: string, depApplied: boolean): void;
+
+    /**
+     * Reports that a task was skipped because something before it failed.
+     */
+    skipped(id: string): void;
 }
 
-export interface ScheduledTask {
-    task: Task;
-    status: 'ready' | 'skipped';
-}
+/**
+ * Starts tasks of a plan once tasks before them have finished.
+ */
+export class Scheduler {
+    #plan: Plan;
+    #callbacks: SchedulerCallbacks;
+    #results = new Map<string, TaskResult>();
+    #started = new Set<string>();
+    #byWait = new Map<string, Barrier[]>();
+    #byBlocked = new Map<string, Barrier[]>();
+    #remaining: number;
+    #finished: Promise<void>;
+    #resolve!: () => void;
 
-export function newTaskScheduler(
-    tasks: Task[],
-): [
-    () => AsyncGenerator<ScheduledTask>,
-    (event: Event, initial: boolean) => void,
-] {
-    // Create nodes from tasks for later usage
-    const nodes: Map<string, Node> = new Map();
-    for (const task of tasks) {
-        nodes.set(task.id, {
-            task,
-            dependents: [],
-            doneDeps: 0,
-            status: 'created',
-        });
+    constructor(plan: Plan, callbacks: SchedulerCallbacks) {
+        this.#plan = plan;
+        this.#callbacks = callbacks;
+        for (const id of plan.unchanged) {
+            this.#results.set(id, 'unchanged');
+        }
+        for (const barrier of plan.barriers) {
+            for (const id of barrier.wait) addTo(this.#byWait, id, barrier);
+            for (const id of barrier.blocked)
+                addTo(this.#byBlocked, id, barrier);
+        }
+        this.#remaining =
+            Object.keys(plan.nodes).length - plan.unchanged.length;
+        this.#finished = new Promise((resolve) => (this.#resolve = resolve));
     }
-    // Fill dependency back-edges
-    for (const task of tasks) {
-        for (const id of task.after ?? []) {
-            nodes.get(id)?.dependents.push(task.id);
+
+    /**
+     * Starts tasks that are ready.
+     * @returns Promise that resolves when all tasks have finished.
+     */
+    start(): Promise<void> {
+        if (this.#remaining === 0) {
+            this.#resolve();
         }
+        for (const id of Object.keys(this.#plan.nodes)) {
+            this.#tryStart(id);
+        }
+        return this.#finished;
     }
 
-    // Track task count so we know when to return
-    let pending = tasks.length;
-
-    const schedulerQueue: ScheduledTask[] = [];
-    const queueTask = (node: Node) => {
-        if (node.task.after?.length === node.doneDeps) {
-            if (node.status !== 'done') {
-                log.debug(
-                    'task queued',
-                    'task',
-                    node.task.id,
-                    'status',
-                    node.status,
-                );
-                schedulerQueue.push({
-                    task: node.task,
-                    status: 'ready',
-                });
-            } // else: task already done
-        } else if (node.status !== 'done') {
-            log.debug(
-                'pending dependencies',
-                'task',
-                node.task.id,
-                'needed',
-                node.task.after,
-                'done',
-                node.doneDeps,
-            );
-        }
-    };
-
-    const skipTask = (node: Node) => {
-        if (node.status === 'skipped') return; // idempotent
-        node.status = 'skipped';
-        schedulerQueue.push({
-            task: node.task,
-            status: 'skipped',
-        });
-
-        // Recursively skip
-        for (const child of node.dependents) {
-            skipTask(nodes.get(child)!);
-        }
-    };
-
-    let wake!: () => void;
-    let waker = new Promise<void>((r) => (wake = r));
-    const handleCompleted = (event: Event, initial: boolean) => {
-        if (event.type !== 'completed') {
-            return; // Not interested in other kinds of events
-        }
-
-        const node = nodes.get(event.taskId);
-        if (!node) {
-            throw new Error(`internal error: ${event.taskId} has no node!`);
-        }
-        node.status = event.status;
-        pending--;
-        log.debug(
-            'task completed',
-            'task',
-            event.taskId,
-            'pending',
-            pending,
-            'status',
-            event.status,
-        );
-
-        if (event.status === 'done') {
-            // Try starting our dependents
-            for (const dep of node.dependents) {
-                const node = nodes.get(dep)!;
-                node.doneDeps++;
-                if (!initial) {
-                    queueTask(node);
-                } // else: we'll get this when looping over ALL tasks later
-            }
+    finish(id: string, result: 'done' | 'unchanged' | 'error') {
+        this.#setResult(id, result);
+        if (result === 'error') {
+            this.#fail(id);
         } else {
-            // Cascade skip to dependents
-            for (const dep of node.dependents) {
-                skipTask(nodes.get(dep)!);
-            }
-        }
-        if (!initial) {
-            wake();
-            waker = new Promise<void>((r) => (wake = r));
-        }
-    };
-
-    async function* scheduleTasks(): AsyncGenerator<ScheduledTask> {
-        // Try to schedule all tasks for execution. queueTask can handle dependency tracking
-        for (const task of tasks) {
-            queueTask(nodes.get(task.id)!);
-        }
-        log.debug(
-            'initial scheduler pass complete',
-            'pending',
-            pending,
-            'total',
-            tasks.length,
-        );
-
-        // Yield tasks as they become available
-        while (pending > 0) {
-            while (schedulerQueue.length) {
-                yield schedulerQueue.shift()!;
-            }
-            if (pending > 0) {
-                await waker;
+            for (const next of this.#next(id)) {
+                this.#tryStart(next);
             }
         }
     }
 
-    return [scheduleTasks, handleCompleted];
+    #setResult(id: string, result: TaskResult) {
+        this.#results.set(id, result);
+        this.#remaining--;
+        if (this.#remaining === 0) {
+            this.#resolve();
+        }
+    }
+
+    #fail(id: string) {
+        for (const next of this.#next(id)) {
+            if (!this.#results.has(next)) {
+                this.#setResult(next, 'skipped');
+                this.#callbacks.skipped(next);
+                this.#fail(next);
+            }
+        }
+    }
+
+    /**
+     * Tasks that may wait for the given task.
+     */
+    #next(id: string): string[] {
+        const barriers = this.#byWait.get(id) ?? [];
+        return [
+            ...(this.#plan.nodes[id]?.dependents ?? []),
+            ...barriers.flatMap((barrier) => barrier.blocked),
+        ];
+    }
+
+    #tryStart(id: string) {
+        if (this.#results.has(id) || this.#started.has(id)) {
+            return;
+        }
+        const node = this.#plan.nodes[id];
+        const barriers = this.#byBlocked.get(id) ?? [];
+        const waitsFor = [
+            ...(node?.after ?? []),
+            ...barriers.flatMap((barrier) => barrier.wait),
+        ];
+        if (waitsFor.every((dep) => this.#succeeded(dep))) {
+            this.#started.add(id);
+            const depApplied =
+                node?.task.deps.some(
+                    (dep) => this.#results.get(dep) === 'done',
+                ) ?? false;
+            this.#callbacks.run(id, depApplied);
+        }
+    }
+
+    #succeeded(id: string): boolean {
+        const result = this.#results.get(id);
+        return result === 'done' || result === 'unchanged';
+    }
+}
+
+function addTo<K, V>(map: Map<K, V[]>, key: K, value: V) {
+    map.set(key, [...(map.get(key) ?? []), value]);
 }
