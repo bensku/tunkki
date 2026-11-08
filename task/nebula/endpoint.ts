@@ -20,6 +20,11 @@ interface InstallReq {
     certificate: string;
 }
 
+export interface Output {
+    hostname: string;
+    ip: string;
+}
+
 /**
  * Maximum time, in milliseconds, we'll wait for remote clock to catch up with
  * local before installing a certificate.
@@ -116,7 +121,7 @@ export const apply = [
             certificate,
         };
     }),
-    step<InstallReq>('remote', async (state) => {
+    step<InstallReq, Output>('remote', async (state) => {
         // Save certificate BEFORE updating config file
         // Write and rename, so that a reload never sees half-written certificate
         const crtPath = `/etc/nebula/endpoints/${state.id}/host.crt`;
@@ -148,5 +153,10 @@ export const apply = [
                 await nebula.endpointToConfig(network, state.endpoint),
             ),
         );
+
+        return {
+            hostname: state.endpoint.hostname,
+            ip: state.endpoint.ip as string, // Step 0 generates this even if unset in inputs
+        };
     }),
 ];

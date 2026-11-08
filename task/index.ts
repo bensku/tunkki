@@ -3,12 +3,15 @@ import * as builder from '../local/builder';
 import { outputRef } from '../local/outputs';
 import { registerHandler } from '../local/task';
 
+export { log } from '../common/log';
+
 export interface Step {
     location: 'remote' | 'local';
     handler: (
         state: unknown,
         localData?: LocalData,
         oldState?: unknown,
+        oldOutput?: unknown,
     ) => Promise<unknown>;
 }
 
@@ -17,9 +20,27 @@ interface LocalData {
     [key: string]: unknown;
 }
 
-export function step<T, O = unknown, L = unknown>(
+/**
+ * Defines a step of a task type.
+ * @param location Where the step runs.
+ * @param handler Runs the step. Gets the output of the previous step (or
+ * input of the task, for the first step). Only the first step gets the task's
+ * old input as oldState. All steps get the old output of the task (what its
+ * last step returned when it was last applied) as oldOutput. Both are
+ * undefined when the task is created or replaced.
+ * @template T Input of the step.
+ * @template O Output of the step.
+ * @template L Extra local data.
+ * @template P Output of the task, i.e. of its last step.
+ */
+export function step<T, O = unknown, L = unknown, P = unknown>(
     location: Step['location'],
-    handler: (state: T, localData: LocalData & L, oldState?: T) => Promise<O>,
+    handler: (
+        state: T,
+        localData: LocalData & L,
+        oldState?: T,
+        oldOutput?: P,
+    ) => Promise<O>,
 ): Step {
     return {
         location,
@@ -27,7 +48,7 @@ export function step<T, O = unknown, L = unknown>(
     };
 }
 
-export interface Output {
+export interface TaskOutput {
     id: string;
 }
 
@@ -47,7 +68,7 @@ export interface TaskOptions {
     requireReapply?: boolean;
 }
 
-export type TaskType<S, O extends Output> = (
+export type TaskType<S, O extends TaskOutput> = (
     id: string,
     state: S,
     opts?: TaskOptions,
@@ -64,7 +85,11 @@ export type TaskType<S, O extends Output> = (
 export function taskType<S, O, R = unknown>(
     name: string,
     handler: string,
-    outputSource?: (id: string, state: S, opts: { dependencies: string[] }) => O,
+    outputSource?: (
+        id: string,
+        state: S,
+        opts: { dependencies: string[] },
+    ) => O,
 ): TaskType<S, O & { id: string; outputs: R }> {
     registerHandler(name, handler.replace('file://', ''));
     return (id, state, opts) => {
@@ -93,7 +118,9 @@ export function combine<S, O>(
             '$noop',
             {},
             {
-                dependencies: builder.tasks.slice(startIdx).map((task) => task.id),
+                dependencies: builder.tasks
+                    .slice(startIdx)
+                    .map((task) => task.id),
                 requireReapply: true,
             },
         );

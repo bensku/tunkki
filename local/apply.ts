@@ -278,16 +278,16 @@ class TaskApplier {
         }
 
         let state: unknown = input;
+        const old = replaced ? undefined : record;
         const steps = await loadSteps(task.type);
         for (const [i, step] of steps.entries()) {
             if (step.location === 'local') {
                 this.#onStarted(id);
-                const oldState =
-                    i === 0 && !replaced ? record?.state : undefined;
                 state = await step.handler(
                     state,
                     { host: session.host },
-                    oldState,
+                    i === 0 ? old?.state : undefined,
+                    old?.output,
                 );
             } else {
                 state = await session.run(task.type, id, i, state);

@@ -1,9 +1,9 @@
 import * as fs from 'node:fs';
-import { type Output, type TaskType, taskType } from '@bensku/tunkki/task';
+import { type TaskOutput, type TaskType, taskType } from '@bensku/tunkki/task';
 import type { State as DirState } from './directory';
 import type { State as PutState } from './put';
 
-const putImpl = taskType<PutState, Output>(
+const putImpl = taskType<PutState, TaskOutput>(
     'files.put',
     import.meta.resolve('./put'),
 );
@@ -51,7 +51,7 @@ interface WriteData extends PutInputBase {
 
 export type PutInput = UploadLocalFile | WriteData;
 
-export const put: TaskType<PutInput, Output> = (id, input, opts) => {
+export const put: TaskType<PutInput, TaskOutput> = (id, input, opts) => {
     // Hash the local file so that remote can check if it changed BEFORE we upload it
     // TODO streaming hash, don't read entire file in memory
     const hasher = new Bun.CryptoHasher('sha256');
@@ -75,7 +75,7 @@ export const put: TaskType<PutInput, Output> = (id, input, opts) => {
     );
 };
 
-export const directory = taskType<DirState, Output>(
+export const directory = taskType<DirState, TaskOutput>(
     'files.directory',
     import.meta.resolve('./directory'),
 );

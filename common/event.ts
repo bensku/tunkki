@@ -1,6 +1,6 @@
 import { deserialize, serialize } from 'bun:jsc';
 
-export const CURRENT_PROTOCOL = 1;
+export const CURRENT_PROTOCOL = 2;
 
 /**
  * Contents of a stack's state file on a remote: task ids mapped to records.

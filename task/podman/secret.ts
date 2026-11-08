@@ -18,7 +18,7 @@ export interface ReadFromEnv extends BaseSecret {
     hash: string;
 }
 
-export type State = RandomString | ReadFromEnv;
+export type Input = RandomString | ReadFromEnv;
 
 interface CreateReq {
     name: string;
@@ -26,7 +26,7 @@ interface CreateReq {
 }
 
 export const apply = [
-    step<State, CreateReq>('local', async (state: State) => {
+    step<Input, CreateReq>('local', async (state: Input) => {
         let value: string;
         if (state.source === 'random') {
             const bytes = new Uint8Array(state.length);
@@ -52,6 +52,6 @@ export const apply = [
     }),
 ];
 
-export const cleanup = async (state: State) => {
+export const cleanup = async (state: Input) => {
     await $`podman secret rm --ignore ${state.name}`;
 };

@@ -1,10 +1,13 @@
 import type { Event, TaskRecord } from '../common/event';
 import { log } from '../common/log';
 import { stepsOf, type TaskHandler } from '../common/task';
+import { provideSharedModules } from './shared';
 import { loadState, type State } from './state';
 import { type Reply, Semaphore } from './util';
 
 type RunEvent = Extract<Event, { type: 'run' }>;
+
+provideSharedModules();
 
 export interface SessionOptions {
     id: string;
@@ -139,7 +142,7 @@ export class Session {
         const record = this.#state.records[id];
         // $noop has no handler, and nothing to clean up
         if (record && type !== '$noop') {
-            await this.#handler(type).cleanup?.(record.state);
+            await this.#handler(type).cleanup?.(record.state, record.output);
         }
         await this.#state.delete(id);
         log.info('cleaned up', 'task', id);
@@ -152,9 +155,14 @@ export class Session {
                 `task type ${event.task} has no remote step ${event.step}`,
             );
         }
-        const oldState =
-            event.step === 0 ? this.#state.records[event.id]?.state : undefined;
-        const output = await step.handler(event.state, undefined, oldState);
+        // Replaced tasks were cleaned up already, so they have no old record
+        const old = this.#state.records[event.id];
+        const output = await step.handler(
+            event.state,
+            undefined,
+            event.step === 0 ? old?.state : undefined,
+            old?.output,
+        );
         log.info('executed step', 'task', event.id, 'step', event.step);
         return output;
     }

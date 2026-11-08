@@ -202,12 +202,7 @@ describe('deps', () => {
         });
         await builder.loadTasks([fakeHost('h1')]);
         expect(
-            builder.tasks.map((t) => [
-                t.id,
-                t.type,
-                t.deps,
-                t.requireReapply,
-            ]),
+            builder.tasks.map((t) => [t.id, t.type, t.deps, t.requireReapply]),
         ).toEqual([
             ['h1.pair.first', 'test.dummy', [], false],
             ['h1.pair.second', 'test.dummy', ['h1.pair.first'], false],

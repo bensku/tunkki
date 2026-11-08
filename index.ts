@@ -202,7 +202,7 @@ export class TargetPool {
  * Plan, apply, destroy, list tasks, or install the agent - depending on CLI
  * arguments. If you just want to deploy things with tunkki CLI, this is almost
  * certainly what you want.
- * 
+ *
  * For more fine-grained deployment automation, use `connect()` and the
  * `TargetPool` APIs by hand.
  * @param stack Stack to apply tasks in.

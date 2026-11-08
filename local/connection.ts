@@ -88,7 +88,12 @@ export class Connection {
         let timer: Timer | undefined;
         const timeout = new Promise<never>((_, reject) => {
             timer = setTimeout(
-                () => reject(new Error('agent did not initialize connection (missing Hello)')),
+                () =>
+                    reject(
+                        new Error(
+                            'agent did not initialize connection (missing Hello)',
+                        ),
+                    ),
                 HELLO_TIMEOUT,
             );
         });

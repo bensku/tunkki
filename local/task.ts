@@ -1,6 +1,6 @@
 import type { Step } from '@bensku/tunkki/task';
 import { log } from '../common/log';
-import { stepsOf, type TaskHandler } from '../common/task';
+import { SHARED_MODULES, stepsOf, type TaskHandler } from '../common/task';
 
 export interface Task {
     /**
@@ -82,11 +82,28 @@ export function bundleHandler(type: string): Promise<string> {
     return bundle;
 }
 
+/**
+ * Leaves modules that the agent provides out of bundles (see
+ * remote/shared.ts). Unlike Bun's `external`, this does not match their
+ * subpaths, e.g. `@bensku/tunkki/task/util` is still bundled.
+ */
+const sharedModules: Bun.BunPlugin = {
+    name: 'tunkki-shared-modules',
+    setup(build) {
+        build.onResolve({ filter: /^@bensku\/tunkki(\/.*)?$/ }, (args) =>
+            SHARED_MODULES.includes(args.path)
+                ? { path: args.path, external: true }
+                : undefined,
+        );
+    },
+};
+
 async function buildBundle(type: string): Promise<string> {
     const result = await Bun.build({
         entrypoints: [handlerPath(type)],
         target: 'bun',
         format: 'esm',
+        plugins: [sharedModules],
     });
     const output = result.outputs[0];
     if (!result.success || !output) {

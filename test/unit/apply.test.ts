@@ -24,6 +24,10 @@ const broken = taskType<TestState, unknown>(
     'test.broken',
     import.meta.resolve('./fixtures/broken'),
 );
+const history = taskType<TestState, unknown>(
+    'test.history',
+    import.meta.resolve('./fixtures/history'),
+);
 
 declare global {
     var applyTest: { calls: string[] };
@@ -235,6 +239,42 @@ describe('apply', () => {
             host: 'h1',
             old: 1,
         });
+    });
+
+    test('steps and cleanup get the old output', async () => {
+        const define = (value: number) => () =>
+            on('h1', () => {
+                history('h', { name: 'h', value });
+            });
+        expect((await deploy(define(1))).calls).toEqual([
+            'history:local:h:none',
+            'history:remote:h:none',
+        ]);
+        expect((await deploy(define(2))).calls).toEqual([
+            'history:local:h:{"value":1}',
+            'history:remote:h:{"value":1}',
+        ]);
+        expect((await deploy(() => {})).calls).toEqual([
+            'history:cleanup:h:{"value":2}',
+        ]);
+    });
+
+    test('replaced tasks get no old output', async () => {
+        await deploy(() =>
+            on('h1', () => {
+                basic('x', { name: 'x', value: 1 });
+            }),
+        );
+        const { calls } = await deploy(() =>
+            on('h1', () => {
+                history('x', { name: 'x', value: 2 });
+            }),
+        );
+        expect(calls).toEqual([
+            'basic:cleanup:x',
+            'history:local:x:none',
+            'history:remote:x:none',
+        ]);
     });
 
     test('failed steps are not committed and retry next time', async () => {

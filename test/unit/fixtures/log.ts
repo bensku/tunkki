@@ -13,7 +13,7 @@ interface TestGlobal {
     calls: string[];
 }
 
-function record(call: string) {
+export function record(call: string) {
     (globalThis as unknown as { applyTest: TestGlobal }).applyTest.calls.push(
         call,
     );

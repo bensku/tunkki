@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { files, podman, systemd } from '@bensku/tunkki';
-import { combine, type Output, taskType } from '@bensku/tunkki/task';
+import { combine, type TaskOutput, taskType } from '@bensku/tunkki/task';
 import type { nebula } from '@bensku/tunkki/task/util';
 
 export interface SetupState {
@@ -11,7 +11,7 @@ export interface SetupState {
  * Installs Nebula on host. Note that for container networking, you also
  * need nebula-netavark, which is installed with nebula.netavarkSetup!
  */
-export const setup = combine<SetupState, Output>((state, opts) => {
+export const setup = combine<SetupState, TaskOutput>((state, opts) => {
     const daemonFile = files.put(
         'nebula',
         {
@@ -36,7 +36,7 @@ export const setup = combine<SetupState, Output>((state, opts) => {
  * Installs nebula-netavark, i.e. container networking support for Nebula.
  * Base Nebula installation is required; nebula.setup can do that for you.
  */
-export const netavarkSetup = combine<SetupState, Output>((state, opts) => {
+export const netavarkSetup = combine<SetupState, TaskOutput>((state, opts) => {
     // Copy binaries to target
     const daemonFile = files.put(
         'nebula-netavarkd',
@@ -92,7 +92,7 @@ export const netavarkSetup = combine<SetupState, Output>((state, opts) => {
 export type CA = nebula.CA;
 export type Network = nebula.Network;
 
-export const network = taskType<nebula.Network, Output>(
+export const network = taskType<nebula.Network, TaskOutput>(
     'nebula.network',
     import.meta.resolve('./network'),
 );
@@ -102,7 +102,7 @@ export type Endpoint = nebula.Endpoint;
 /**
  * Creates a Nebula endpoint, but does not by itself connect it to anything.
  */
-export const endpoint = taskType<nebula.Endpoint, Output>(
+export const endpoint = taskType<nebula.Endpoint, TaskOutput>(
     'nebula.endpoint',
     import.meta.resolve('./endpoint'),
 );

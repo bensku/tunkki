@@ -1,10 +1,16 @@
 import { nebula } from '@bensku/tunkki';
-import { type Output, type TaskType, taskType } from '@bensku/tunkki/task';
+import { type TaskOutput, type TaskType, taskType } from '@bensku/tunkki/task';
 import type { nebula as nebulaUtil } from '@bensku/tunkki/task/util';
 import type { State as ContainerState } from './container';
 import type { State as NetworkState } from './network';
 import type { State as PodState } from './pod';
-import type { RandomString, ReadFromEnv, State as SecretState } from './secret';
+import type { RandomString, ReadFromEnv, Input as SecretState } from './secret';
+import {
+    SECRET_DRIVERS,
+    type SecretDriver,
+    type Input as SecretV2In,
+    type Output as SecretV2Out,
+} from './secretv2';
 
 export type ContainerEndpoint = Omit<nebulaUtil.Endpoint, 'id'>;
 export interface ContainerOutput {
@@ -57,18 +63,18 @@ export const container = taskType<ContainerState, ContainerOutput>(
     }),
 );
 
-export const network = taskType<NetworkState, Output>(
+export const network = taskType<NetworkState, TaskOutput>(
     'podman.network',
     import.meta.resolve('./network'),
 );
-export const pod = taskType<PodState, Output>(
+export const pod = taskType<PodState, TaskOutput>(
     'podman.pod',
     import.meta.resolve('./pod'),
 );
 
 export type SecretInput = RandomString | Omit<ReadFromEnv, 'hash'>;
 
-export interface SecretOutput extends Output {
+export interface SecretOutput extends TaskOutput {
     name: string;
 }
 
@@ -104,3 +110,53 @@ const secretInternal = taskType<SecretState, SecretOutput>(
         name: state.name,
     }),
 );
+
+export type SecretV2Input = Omit<SecretV2In, 'hash'>;
+export type SecretV2Output = SecretV2Out;
+
+/**
+ * Creates a Podman secret on host from given source. Its name changes
+ * whenever its value changes; use `outputs.ref` to refer to it.
+ */
+export const secretv2: TaskType<
+    SecretV2Input,
+    TaskOutput & { outputs: SecretV2Output }
+> = (id, input, opts) => {
+    const driver = SECRET_DRIVERS[input.driver];
+    if (!driver) {
+        throw new Error(
+            `invalid secret driver ${input.driver} for secret ${id}`,
+        );
+    }
+    return secretV2Internal(
+        id,
+        {
+            driver: input.driver,
+            source: input.source,
+            hash: Bun.CryptoHasher.hash(
+                'sha256',
+                driver(input.source),
+            ).toBase64(),
+        },
+        opts,
+    );
+};
+
+const secretV2Internal = taskType<SecretV2In, unknown, SecretV2Output>(
+    'podman.secretv2',
+    import.meta.resolve('./secretv2'),
+);
+
+/**
+ * Registers a new secret driver.
+ * @param id Driver id, used in secretv2 inputs.
+ * @param driver Driver function. Takes secret source strings in, returns
+ * secret values out. The driver MUST NOT generate a new secret each time,
+ * but fetch them from somewhere (e.g. local environment variables).
+ */
+export function registerSecretDriver(id: string, driver: SecretDriver): void {
+    if (SECRET_DRIVERS[id]) {
+        throw new Error(`secret driver ${id} already registered`);
+    }
+    SECRET_DRIVERS[id] = driver;
+}
