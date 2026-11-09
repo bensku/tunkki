@@ -26,6 +26,7 @@ export class Scheduler {
     #byWait = new Map<string, Barrier[]>();
     #byBlocked = new Map<string, Barrier[]>();
     #remaining: number;
+    #cancelled = false;
     #finished: Promise<void>;
     #resolve!: () => void;
 
@@ -57,6 +58,19 @@ export class Scheduler {
             this.#tryStart(id);
         }
         return this.#finished;
+    }
+
+    /**
+     * Skips tasks that haven't started yet. Running tasks are left to finish.
+     */
+    cancel() {
+        this.#cancelled = true;
+        for (const id of Object.keys(this.#plan.nodes)) {
+            if (!this.#results.has(id) && !this.#started.has(id)) {
+                this.#setResult(id, 'skipped');
+                this.#callbacks.skipped(id);
+            }
+        }
     }
 
     finish(id: string, result: 'done' | 'unchanged' | 'error') {
@@ -100,7 +114,7 @@ export class Scheduler {
     }
 
     #tryStart(id: string) {
-        if (this.#results.has(id) || this.#started.has(id)) {
+        if (this.#cancelled || this.#results.has(id) || this.#started.has(id)) {
             return;
         }
         const node = this.#plan.nodes[id];

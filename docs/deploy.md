@@ -7,9 +7,20 @@ Remotes are thin. They store state and execute steps they are told to. Local
 does all planning, ordering and comparison.
 
 ## Connect
-Local connects to the agent on every host. The agent says `hello` with its
-protocol version, and local refuses agents that have unsupported version.
-Local then sends `settings`.
+Local connects to the agent on every host. If a human might be at the
+terminal, it connects to one host at a time, so that it is clear which host
+e.g. a security key touch is for.
+
+Connectors may report when they have authenticated. Authentication may need
+the user, so it has no timeout. The `ssh` connector learns of it from a line
+that the remote shell prints to stderr before starting the agent. It also
+points `SSH_ASKPASS` to a helper that reports requests to touch a security key,
+since OpenSSH only prints them when stderr is a terminal. Other askpass
+prompts go to the usual askpass program.
+
+Once authenticated, the agent says `hello` with its protocol version, and
+local refuses agents that have unsupported version. Local then sends
+`settings`.
 
 ## Compute desired state
 Local runs the deploy script's `on(...)` blocks for every host, imperatively

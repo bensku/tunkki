@@ -1,21 +1,24 @@
-import type { Event, Plan, PlanMode, TargetPool } from '../../..';
-import { connect } from '../../..';
+import type { Plan, PlanMode, Result, TargetPool } from '../../..';
 import { readPlan } from '../../plan';
 import { makeColor } from '../colors';
 import {
-    connectionProgress,
+    type CliContext,
+    connectHosts,
+    hiddenIds,
+    reporterFor,
+} from '../context';
+import {
     countChanges,
     err,
     hasWork,
-    liveProgress,
     out,
     printJson,
     printPlan,
-    printSummary,
     visibleChanges,
 } from '../output';
 import type { ParsedCli } from '../parse';
-import { type CliContext, hiddenIds } from './plan';
+import type { Reporter } from '../reporter';
+import { term } from '../terminal';
 
 type Flags = ParsedCli['flags'];
 
@@ -46,11 +49,12 @@ export async function planAndApply(
         return 2;
     }
 
-    const pool = await connect(ctx.hosts, (event) =>
-        connectionProgress(event, flags),
-    );
+    const reporter = reporterFor(flags);
+    const pool = await connectHosts(ctx.hosts, reporter);
     try {
+        reporter.status('Planning');
         const plan = await pool.plan(ctx.stack, mode);
+        reporter.status(null);
         const hidden = hiddenIds(plan, flags);
         if (!flags.json) {
             printPlan(
@@ -72,9 +76,9 @@ export async function planAndApply(
             if (!hasWork(plan)) {
                 if (flags.json) {
                     printJson({
+                        type: 'result',
                         plans: visibleChanges(plan, hidden),
                         results: [],
-                        events: [],
                     });
                 }
                 return 0;
@@ -83,7 +87,7 @@ export async function planAndApply(
         } else if (!flags.yes && !confirmApply(ctx, mode)) {
             return 0;
         }
-        return await execute(pool, plan, flags, hidden);
+        return await execute(pool, plan, flags, hidden, reporter);
     } finally {
         await pool.close();
     }
@@ -119,11 +123,16 @@ async function applyPlanFile(ctx: CliContext, path: string): Promise<number> {
     }
 
     const flags = ctx.cli.flags;
-    const pool = await connect(hosts, (event) =>
-        connectionProgress(event, flags),
-    );
+    const reporter = reporterFor(flags);
+    const pool = await connectHosts(hosts, reporter);
     try {
-        return await execute(pool, plan, flags, hiddenIds(plan, flags));
+        return await execute(
+            pool,
+            plan,
+            flags,
+            hiddenIds(plan, flags),
+            reporter,
+        );
     } finally {
         await pool.close();
     }
@@ -134,47 +143,48 @@ async function execute(
     plan: Plan,
     flags: Flags,
     hidden: Set<string>,
+    reporter: Reporter,
 ): Promise<number> {
-    const outputOpts = {
-        color: flags.color,
-        json: flags.json,
-        quiet: flags.quiet,
-        showUnchanged: false,
-    };
-    const events: Event[] = [];
-    const results = await pool.execute(plan, (event) => {
-        events.push(event);
-        if (!hidden.has(event.taskId)) {
-            liveProgress(event, outputOpts);
+    // First Ctrl-C lets running tasks finish and stores their results,
+    // second one exits right away
+    const abort = new AbortController();
+    const restore = term.onInterrupt(() => {
+        if (abort.signal.aborted) {
+            return false;
         }
+        abort.abort();
+        reporter.notice(
+            'Interrupted: letting running tasks finish. Press Ctrl-C again to stop right away.',
+        );
+        return true;
     });
+
+    let results: Result[];
+    reporter.startApply(plan, hidden);
+    try {
+        results = await pool.execute(
+            plan,
+            (event) => reporter.task(event),
+            abort.signal,
+        );
+    } finally {
+        restore();
+    }
+    const interrupted = abort.signal.aborted;
+    reporter.finishApply(results, interrupted);
 
     if (flags.json) {
         printJson({
+            type: 'result',
             plans: visibleChanges(plan, hidden),
             results,
-            events: events.map((e) => ({
-                host: e.host.id,
-                type: e.type,
-                taskId: e.taskId,
-                status: e.status,
-                error: e.error,
-            })),
+            interrupted,
         });
-    } else {
-        const visible = (id: string) => !hidden.has(id);
-        printSummary(
-            results.map((r) => ({
-                ...r,
-                completed: r.completed.filter(visible),
-                unchanged: r.unchanged.filter(visible),
-                skipped: r.skipped.filter(visible),
-                errored: r.errored.filter((e) => visible(e.taskId)),
-            })),
-            outputOpts,
-        );
     }
 
+    if (interrupted) {
+        return 130;
+    }
     const failed = results.some((r) => r.errored.length > 0 || r.error);
     return failed ? 1 : 0;
 }

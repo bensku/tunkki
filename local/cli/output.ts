@@ -1,7 +1,9 @@
-import type { ConnectionEvent, Event, Plan, Result } from '../..';
+import type { Plan } from '../..';
 import { substituteState } from '../outputs';
-import { type Colorizer, makeColor } from './colors';
-import { renderDiff, renderValue } from './diff';
+import { makeColor } from './colors';
+import { renderDiff } from './diff';
+import { shortId } from './reporter';
+import { term } from './terminal';
 
 export interface OutputOptions {
     color: boolean;
@@ -11,22 +13,16 @@ export interface OutputOptions {
 }
 
 export function out(...parts: unknown[]): void {
-    process.stdout.write(`${parts.map(stringify).join(' ')}\n`);
+    term.write('stdout', `${parts.map(stringify).join(' ')}\n`);
 }
 
 export function err(...parts: unknown[]): void {
-    process.stderr.write(`${parts.map(stringify).join(' ')}\n`);
+    term.write('stderr', `${parts.map(stringify).join(' ')}\n`);
 }
 
 function stringify(v: unknown): string {
     if (typeof v === 'string') return v;
     return Bun.inspect(v, { colors: false, depth: 4 });
-}
-
-export function section(c: Colorizer, title: string): void {
-    out(
-        c.bold(`── ${title} ${'─'.repeat(Math.max(0, 60 - title.length - 4))}`),
-    );
 }
 
 /**
@@ -113,60 +109,75 @@ export function printPlan(
     const oldState = (id: string) => plan.old[id]?.state;
     const totals = { add: 0, change: 0, maybe: 0, replace: 0, destroy: 0 };
 
+    // Hosts often get the same changes, so they are shown together
+    const groups = new Map<string, string[]>();
+    const unchangedHosts: string[] = [];
     for (const changes of visibleChanges(plan, hidden)) {
-        const entries: { line: string; body?: string[] }[] = [];
+        const host = changes.host;
+        const name = (id: string) => shortId(id, host);
+        const lines: string[] = [];
+        const entry = (line: string, body?: string[]) => {
+            lines.push(line, ...(body ?? []));
+        };
         for (const id of changes.created) {
-            entries.push({
-                line: `  ${c.green('+')} ${id} ${typeOf(id)}`,
-                body: renderDiff(undefined, resolvedState(plan, id), c, 4),
-            });
+            entry(
+                `  ${c.green('+')} ${name(id)} ${typeOf(id)}`,
+                renderDiff(undefined, resolvedState(plan, id), c, 4),
+            );
             totals.add++;
         }
         for (const id of changes.updated) {
-            entries.push({
-                line: `  ${c.yellow('~')} ${id} ${typeOf(id)}`,
-                body: renderDiff(oldState(id), resolvedState(plan, id), c, 4),
-            });
+            entry(
+                `  ${c.yellow('~')} ${name(id)} ${typeOf(id)}`,
+                renderDiff(oldState(id), resolvedState(plan, id), c, 4),
+            );
             totals.change++;
         }
         for (const id of changes.maybe) {
-            entries.push({
-                line: `  ${c.yellow('?')} ${id} ${typeOf(id)} ${c.dim('may change with its deps')}`,
-            });
+            entry(
+                `  ${c.yellow('?')} ${name(id)} ${typeOf(id)} ${c.dim('may change with its deps')}`,
+            );
             totals.maybe++;
         }
         for (const id of changes.replaced) {
             const oldType = plan.old[id]?.handler;
-            entries.push({
-                line: `  ${c.yellow('±')} ${id} ${c.dim(`(${oldType} → ${plan.nodes[id]?.task.type})`)}`,
-                body: renderDiff(oldState(id), resolvedState(plan, id), c, 4),
-            });
+            entry(
+                `  ${c.yellow('±')} ${name(id)} ${c.dim(`(${oldType} → ${plan.nodes[id]?.task.type})`)}`,
+                renderDiff(oldState(id), resolvedState(plan, id), c, 4),
+            );
             totals.replace++;
         }
         for (const id of changes.deleted) {
-            entries.push({
-                line: `  ${c.red('-')} ${id} ${typeOf(id)}`,
-                body: renderDiff(oldState(id), undefined, c, 4),
-            });
+            entry(
+                `  ${c.red('-')} ${name(id)} ${typeOf(id)}`,
+                renderDiff(oldState(id), undefined, c, 4),
+            );
             totals.destroy++;
+        }
+        if (lines.length === 0 && !opts.showUnchanged) {
+            unchangedHosts.push(host);
+            continue;
         }
         if (opts.showUnchanged) {
             for (const id of changes.unchanged) {
-                entries.push({ line: c.dim(`  = ${id}`) });
+                entry(c.dim(`  = ${name(id)}`));
             }
         }
+        const key = lines.join('\n');
+        groups.set(key, [...(groups.get(key) ?? []), host]);
+    }
 
-        out(c.bold(`host ${changes.host}`));
-        if (entries.length === 0) {
-            out(c.dim('  (no changes)'));
-        }
-        for (const entry of entries) {
-            out(entry.line);
-            for (const line of entry.body ?? []) {
-                out(line);
-            }
-        }
+    for (const [body, hosts] of groups) {
+        out(
+            c.bold(
+                `${hosts.length === 1 ? 'host' : 'hosts'} ${hosts.join(', ')}`,
+            ),
+        );
+        out(body.length > 0 ? body : c.dim('  (no changes)'));
         out('');
+    }
+    if (unchangedHosts.length > 0) {
+        out(c.dim(`No changes on ${unchangedHosts.join(', ')}.`));
     }
 
     out(
@@ -178,100 +189,6 @@ export function printPlan(
     );
 }
 
-export function liveProgress(event: Event, opts: OutputOptions): void {
-    if (opts.quiet || opts.json) return;
-    const c = makeColor(opts.color);
-    let icon: string;
-    if (event.type === 'started') {
-        icon = c.dim('→');
-    } else {
-        switch (event.status) {
-            case 'done':
-                icon = c.green('✓');
-                break;
-            case 'unchanged':
-                icon = c.dim('=');
-                break;
-            case 'error':
-                icon = c.red('✗');
-                break;
-            case 'skipped':
-                icon = c.dim('·');
-                break;
-            default:
-                return;
-        }
-    }
-    const tag = c.dim(`[${event.host.id}]`);
-    let line = `${tag} ${icon} ${event.taskId}`;
-    if (event.type === 'completed' && event.status === 'error' && event.error) {
-        line += ` ${c.red(event.error)}`;
-    }
-    out(line);
-}
-
-export function connectionProgress(
-    event: ConnectionEvent,
-    opts: Pick<OutputOptions, 'json' | 'quiet' | 'color'>,
-): void {
-    if (opts.quiet || opts.json) return;
-    const c = makeColor(opts.color);
-    if (event.type === 'ready') {
-        out(`${c.green('✓')} All hosts connected`);
-        return;
-    }
-    const tag = c.dim(`[${event.host.id}]`);
-    if (event.type === 'started') {
-        out(`${tag} ${c.dim('→')} connecting`);
-    } else if (event.status === 'done') {
-        out(`${tag} ${c.green('✓')} connected`);
-    } else {
-        const message =
-            event.error instanceof Error
-                ? event.error.message
-                : stringify(event.error);
-        out(`${tag} ${c.red('✗')} connection failed: ${message}`);
-    }
-}
-
-export function printSummary(results: Result[], opts: OutputOptions): void {
-    const c = makeColor(opts.color);
-    let totalDone = 0;
-    let totalUnchanged = 0;
-    let totalSkipped = 0;
-    let totalErrored = 0;
-
-    for (const r of results) {
-        totalDone += r.completed.length;
-        totalUnchanged += r.unchanged.length;
-        totalSkipped += r.skipped.length;
-        totalErrored += r.errored.length + (r.error ? 1 : 0);
-    }
-
-    if (totalErrored > 0) {
-        out('');
-        out(c.bold(c.red('Errors:')));
-        for (const r of results) {
-            for (const e of r.errored) {
-                out(`  ${c.dim(`[${r.host}]`)} ${c.red(e.taskId)}: ${e.error}`);
-            }
-            if (r.error) {
-                out(`  ${c.dim(`[${r.host}]`)} ${r.error}`);
-            }
-        }
-    }
-
-    out('');
-    out(
-        `${c.bold('Apply complete:')}` +
-            ` ${c.green(`${totalDone} done`)}, ` +
-            `${c.dim(`${totalUnchanged} unchanged`)}, ` +
-            `${c.dim(`${totalSkipped} skipped`)}, ` +
-            `${c.red(`${totalErrored} errored`)}` +
-            ` across ${results.length} host(s).`,
-    );
-}
-
 export function printJson(payload: unknown): void {
     process.stdout.write(`${JSON.stringify(payload)}\n`);
 }
@@ -279,6 +196,3 @@ export function printJson(payload: unknown): void {
 export function printJsonError(message: string): void {
     process.stderr.write(`${JSON.stringify({ error: message })}\n`);
 }
-
-export type { Colorizer };
-export { makeColor, renderValue };

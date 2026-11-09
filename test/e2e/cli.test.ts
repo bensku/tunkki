@@ -64,7 +64,7 @@ t('plan file is applied by another process', async () => {
         value: 'one',
     });
     expect(planned.exitCode).toBe(0);
-    expect(planned.stdout).toContain('+ test1.probe');
+    expect(planned.stdout).toContain('hosts test1, test2\n  + probe');
     expect(await probeLog('test1', probeDir(stack))).toEqual([]);
 
     const applied = await cli(['apply', `--plan-file=${planFile}`], {

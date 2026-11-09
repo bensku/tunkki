@@ -149,4 +149,18 @@ describe('scheduler', () => {
     test('finishes at once without tasks to run', async () => {
         await schedule(planOf({ a: [] }, { unchanged: ['a'] })).done;
     });
+
+    test('cancel skips tasks that have not started', async () => {
+        const s = schedule(planOf({ a: [], b: ['a'], c: [] }));
+        expect(s.started.map(([id]) => id)).toEqual(['a', 'c']);
+        s.scheduler.cancel();
+        expect(s.skipped).toEqual(['b']);
+        expect(s.finished).toBe(false);
+
+        // Running tasks still finish, but nothing new starts
+        s.scheduler.finish('a', 'done');
+        s.scheduler.finish('c', 'error');
+        expect(s.started).toHaveLength(2);
+        await s.done;
+    });
 });

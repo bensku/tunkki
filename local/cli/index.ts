@@ -1,4 +1,5 @@
-import type { Host } from '../..';
+import { ConnectError, type Host } from '../..';
+import { formatError } from '../../common/error';
 import { type Message, setupLogger } from '../../common/log';
 import { makeColor } from './colors';
 import * as applyCmd from './commands/apply';
@@ -6,16 +7,13 @@ import * as destroyCmd from './commands/destroy';
 import * as installAgentCmd from './commands/install-agent';
 import * as planCmd from './commands/plan';
 import * as tasksCmd from './commands/tasks';
+import type { CliContext } from './context';
 import { err, printJsonError } from './output';
 import { CliExitError, filterHosts, type ParsedCli, parseCli } from './parse';
+import { term } from './terminal';
 
+export type { CliContext } from './context';
 export type { ParsedCli } from './parse';
-
-export interface CliContext {
-    stack: string;
-    hosts: Host[];
-    cli: ParsedCli;
-}
 
 const COMMAND_RUNNERS: Record<
     ParsedCli['command'],
@@ -43,7 +41,7 @@ function setupCliLogger(flags: ParsedCli['flags']): void {
                     : Bun.inspect(p, { colors: false, depth: 4 }),
             )
             .join(' ');
-        process.stderr.write(`${tag} ${parts}\n`);
+        term.write('stderr', `${tag} ${parts}\n`);
     }, flags.logLevel);
 }
 
@@ -79,7 +77,14 @@ export async function runCli(stack: string, hosts: Host[]): Promise<never> {
         const code = await COMMAND_RUNNERS[cli.command](ctx);
         process.exit(code);
     } catch (e) {
-        const msg = Bun.inspect(e);
+        term.stop();
+        // Connection errors were already shown for each host
+        const msg =
+            e instanceof ConnectError
+                ? e.message
+                : cli.flags.logLevel === 0
+                  ? Bun.inspect(e)
+                  : formatError(e);
         if (cli.flags.json) {
             printJsonError(msg);
         } else {

@@ -1,4 +1,5 @@
 import type { Host } from '@bensku/tunkki';
+import { formatError } from '../common/error';
 import type { Event, TaskRecord } from '../common/event';
 import { log } from '../common/log';
 import type { Connection } from './connection';
@@ -44,11 +45,13 @@ export interface Result {
  * @param plan Plan to apply.
  * @param conns Connections to all hosts in the plan.
  * @param callback Receives progress events.
+ * @param signal Once aborted, tasks that haven't started are skipped.
  */
 export async function applyPlan(
     plan: Plan,
     conns: Connection[],
     callback?: (event: TaskEvent) => void,
+    signal?: AbortSignal,
 ): Promise<Result[]> {
     const sessionId = crypto.randomUUID();
     const sessions = new Map(
@@ -100,8 +103,8 @@ export async function applyPlan(
             result = await applier.apply(id, depApplied);
         } catch (e) {
             result = 'error';
-            error = e instanceof RemoteError ? e.message : Bun.inspect(e);
-            log.error('task failed', 'task', id, 'error', error);
+            error = e instanceof RemoteError ? e.message : formatError(e);
+            log.debug('task failed', 'task', id, 'error', e);
         }
 
         const hostResult = resultOf(id);
@@ -122,7 +125,16 @@ export async function applyPlan(
             emit(id, { type: 'completed', status: 'skipped' });
         },
     });
-    await scheduler.start();
+    const cancel = () => scheduler.cancel();
+    if (signal?.aborted) {
+        cancel();
+    }
+    signal?.addEventListener('abort', cancel);
+    try {
+        await scheduler.start();
+    } finally {
+        signal?.removeEventListener('abort', cancel);
+    }
 
     for (const id of plan.refresh) {
         sessionOf(id).commit(id, {
@@ -423,7 +435,7 @@ class RemoteSession {
             }
             return closed.error;
         } catch (e) {
-            return Bun.inspect(e);
+            return formatError(e);
         }
     }
 

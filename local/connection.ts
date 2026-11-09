@@ -9,8 +9,9 @@ import {
 import { LOG_LEVEL, log } from '../common/log';
 
 /**
- * How long to wait for the remote agent to send Hello.
- * This SHOULD not take anywhere near 10 seconds if all is well.
+ * How long to wait for the remote agent to send Hello, after the transport
+ * has authenticated. This SHOULD not take anywhere near 10 seconds if all is
+ * well.
  */
 const HELLO_TIMEOUT = 10_000;
 
@@ -20,6 +21,7 @@ export class Connection {
     #notify: (() => void) | null = null;
     #closed = false;
     #error: unknown;
+    #authenticated: Promise<void> | undefined;
 
     close: () => Promise<void>;
     host: Host;
@@ -28,6 +30,7 @@ export class Connection {
         this.#in = proto.in;
         this.close = proto.close;
         this.host = host;
+        this.#authenticated = proto.authenticated;
         this.#pump(proto.out);
     }
 
@@ -82,7 +85,21 @@ export class Connection {
     }
 
     /**
-     * Waits for the agent's hello and configures it.
+     * Waits for the transport to authenticate.
+     * @throws If the transport fails before that.
+     */
+    async authenticate() {
+        try {
+            await this.#authenticated;
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            throw new Error(`could not connect to ${this.host.id}: ${msg}`);
+        }
+    }
+
+    /**
+     * Waits for the agent's hello and configures it. Call after
+     * authenticate().
      */
     async handshake() {
         let timer: Timer | undefined;
@@ -106,7 +123,7 @@ export class Connection {
             }
         } catch (e) {
             throw new Error(
-                `incompatible agent on ${this.host.id}, run install-agent to update it`,
+                `missing or incompatible agent on ${this.host.id}, run install-agent to update it`,
                 { cause: e },
             );
         } finally {

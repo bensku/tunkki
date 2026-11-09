@@ -74,6 +74,7 @@ function httpd(healthCheck: HealthCheck, page = 'hello') {
                         type: 'writeFile',
                         data: page,
                         readonly: true,
+                        selinuxRelabel: true,
                     },
                 },
                 ports: [
@@ -110,17 +111,20 @@ t('runs a container, waits until healthy, updates and removes', async () => {
                         type: 'writeFile',
                         data: page,
                         readonly: true,
+                        selinuxRelabel: true,
                     },
                     '/www/greeting.txt': {
                         type: 'uploadFile',
                         localPath: template,
                         template: { NAME: 'tunkki' },
+                        selinuxRelabel: true,
                     },
                     '/run/pass': { type: 'secret', ref: secret.outputs.ref },
                     '/data': {
                         type: 'hostPath',
                         path: `/var/tmp/tunkki-e2e/${name}`,
                         createDir: true,
+                        selinuxRelabel: true,
                     },
                 },
                 ports: [

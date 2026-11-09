@@ -11,7 +11,7 @@ Global flags:
   -v, --verbose     Library log level: info (-v) or debug (-vv)
   -q, --quiet       Suppress non-essential output and library logs
       --no-color    Disable ANSI colors even on a TTY
-      --json        Emit a single JSON document instead of pretty output
+      --json        Emit progress as JSON lines, ending with a result line
   -h, --help        Show help for the command
 
 Run "<script> <command> --help" for command-specific flags.
@@ -32,6 +32,9 @@ Flags:
     apply: `Usage: <script> apply [flags]
 
 Plan the changes, prompt for confirmation, and execute on each host.
+
+Ctrl-C while applying lets running tasks finish and stores their results, but
+starts nothing new. Press it again to stop right away.
 
 With --plan-file, apply a plan saved by "plan --plan-file" without prompting.
 This fails if a host's state has changed since the plan was made. Tasks are

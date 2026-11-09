@@ -1,3 +1,4 @@
+import { formatError } from '../common/error';
 import type { Event, TaskRecord } from '../common/event';
 import { log } from '../common/log';
 import { stepsOf, type TaskHandler } from '../common/task';
@@ -65,7 +66,8 @@ export class Session {
                 this.#handlers[type] = await import(url);
             }
         } catch (e) {
-            error = Bun.inspect(e);
+            log.error('failed to load handlers', e);
+            error = formatError(e);
         }
         this.#reply({ type: 'ready', session: this.#id, error });
     }
@@ -84,7 +86,7 @@ export class Session {
         this.#track(
             this.#state.commit(id, record).catch((e) => {
                 log.error('commit failed', 'task', id, 'error', e);
-                this.#commitErrors.push(`${id}: ${Bun.inspect(e)}`);
+                this.#commitErrors.push(`${id}: ${formatError(e)}`);
             }),
         );
     }
@@ -132,7 +134,7 @@ export class Session {
                 'error',
                 e,
             );
-            this.#done(event.id, 'error', Bun.inspect(e));
+            this.#done(event.id, 'error', formatError(e));
         } finally {
             release();
         }

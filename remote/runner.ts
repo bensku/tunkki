@@ -1,3 +1,4 @@
+import { formatError } from '../common/error';
 import { CURRENT_PROTOCOL, type Event } from '../common/event';
 import { log, setupLogger } from '../common/log';
 import { openSession, type Session } from './session';
@@ -43,7 +44,7 @@ export async function serve(
                     sessions.set(event.session, session);
                     log.info('opened session', 'stack', event.stack);
                 } catch (e) {
-                    error = Bun.inspect(e);
+                    error = formatError(e);
                 }
                 reply({ type: 'ready', session: event.session, error });
                 break;
@@ -103,7 +104,7 @@ async function planResult(
             stack,
             tasks: {},
             stateHash: '',
-            error: Bun.inspect(e),
+            error: formatError(e),
         };
     }
 }

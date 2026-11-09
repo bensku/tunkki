@@ -81,7 +81,34 @@ export type ConnectionEvent =
       }
     | {
           host: Host;
+          /**
+           * Connecting to the host has started. It is authenticating now.
+           */
           type: 'started';
+      }
+    | {
+          host: Host;
+          /**
+           * The user needs to do something, e.g. touch their security key.
+           */
+          type: 'prompt';
+          prompt: string;
+      }
+    | {
+          host: Host;
+          /**
+           * The transport printed something, e.g. an SSH warning. These may
+           * arrive until the connection is closed.
+           */
+          type: 'message';
+          message: string;
+      }
+    | {
+          host: Host;
+          /**
+           * The transport has authenticated, waiting for the agent now.
+           */
+          type: 'authenticated';
       }
     | {
           host: Host;
@@ -93,47 +120,98 @@ export type ConnectionEvent =
           type: 'completed';
           status: 'error';
           error: unknown;
+      }
+    | {
+          host: Host;
+          /**
+           * Not connected to, because connecting to another host failed.
+           */
+          type: 'completed';
+          status: 'skipped';
       };
 
+export interface ConnectOptions {
+    /**
+     * How many hosts to connect to at once. If authentication needs the user,
+     * e.g. to touch a security key, 1 makes it clear which host is asking.
+     * Unlimited by default.
+     */
+    concurrency?: number;
+}
+
 /**
- * Connects to agents on remote hosts.
+ * Connecting to some hosts failed.
+ */
+export class ConnectError extends AggregateError {}
+
+/**
+ * Connects to agents on remote hosts. If connecting to one fails, hosts that
+ * haven't been connected to yet are skipped.
  */
 export async function connect(
     hosts: Host[],
     callback?: (event: ConnectionEvent) => void,
+    opts: ConnectOptions = {},
 ): Promise<TargetPool> {
-    const attempts = await Promise.allSettled(
-        hosts.map(async (host) => {
-            callback?.({ host, type: 'started' });
-            let conn: Connection | undefined;
-            try {
-                conn = new Connection(await host.conn.connect(), host);
-                await conn.handshake();
-            } catch (error) {
-                await conn?.close();
-                callback?.({
-                    host,
-                    type: 'completed',
-                    status: 'error',
-                    error,
-                });
-                throw error;
+    const conns: Connection[] = [];
+    const failures: unknown[] = [];
+    const queue = [...hosts];
+
+    const connectOne = async (host: Host) => {
+        callback?.({ host, type: 'started' });
+        let conn: Connection | undefined;
+        try {
+            conn = new Connection(
+                await host.conn.connect({
+                    onPrompt: (prompt) =>
+                        callback?.({ host, type: 'prompt', prompt }),
+                    onMessage: (message) =>
+                        callback?.({ host, type: 'message', message }),
+                }),
+                host,
+            );
+            await conn.authenticate();
+            callback?.({ host, type: 'authenticated' });
+            await conn.handshake();
+        } catch (error) {
+            await conn?.close();
+            callback?.({
+                host,
+                type: 'completed',
+                status: 'error',
+                error,
+            });
+            failures.push(error);
+            return;
+        }
+        callback?.({ host, type: 'completed', status: 'done' });
+        conns.push(conn);
+    };
+    const worker = async () => {
+        for (let host = queue.shift(); host; host = queue.shift()) {
+            if (failures.length > 0) {
+                callback?.({ host, type: 'completed', status: 'skipped' });
+            } else {
+                await connectOne(host);
             }
-            callback?.({ host, type: 'completed', status: 'done' });
-            return conn;
-        }),
+        }
+    };
+    const workers = Math.max(
+        1,
+        Math.min(opts.concurrency ?? Infinity, hosts.length),
     );
-    const failures = attempts
-        .filter((conn) => conn.status === 'rejected')
-        .map((conn) => conn.reason);
-    const conns = attempts
-        .filter((conn) => conn.status === 'fulfilled')
-        .map((conn) => conn.value);
+    await Promise.all(Array.from({ length: workers }, worker));
+
     if (failures.length > 0) {
         // On failure, close the successful connections before erroring!
         await Promise.allSettled(conns.map((conn) => conn.close()));
-        throw new AggregateError(failures, 'connecting to hosts failed');
+        throw new ConnectError(
+            failures,
+            `could not connect to ${failures.length === hosts.length ? 'any hosts' : `${failures.length} of ${hosts.length} hosts`}`,
+        );
     }
+    // Keep the order of hosts
+    conns.sort((a, b) => hosts.indexOf(a.host) - hosts.indexOf(b.host));
     callback?.({ type: 'ready' });
     return new TargetPool(conns);
 }
@@ -177,11 +255,14 @@ export class TargetPool {
      * Applies a plan, made by plan() now or earlier.
      * @param plan Plan to apply. All of its hosts must be connected.
      * @param callback Receives progress events.
+     * @param signal Once aborted, tasks that haven't started yet are skipped.
+     * Running tasks finish and their results are stored.
      * @returns Results by host.
      */
     async execute(
         plan: Plan,
         callback?: (event: TaskEvent) => void,
+        signal?: AbortSignal,
     ): Promise<Result[]> {
         const conns = Object.keys(plan.hosts).map((host) => {
             const conn = this.#conns.find((conn) => conn.host.id === host);
@@ -190,7 +271,7 @@ export class TargetPool {
             }
             return conn;
         });
-        return applyPlan(plan, conns, callback);
+        return applyPlan(plan, conns, callback, signal);
     }
 
     async close(): Promise<void> {

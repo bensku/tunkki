@@ -1,27 +1,13 @@
-import { connect, type Host, type Plan } from '../../..';
 import { writePlan } from '../../plan';
 import {
-    connectionProgress,
-    err,
-    noopIds,
-    printJson,
-    printPlan,
-    visibleChanges,
-} from '../output';
-import type { ParsedCli } from '../parse';
+    type CliContext,
+    connectHosts,
+    hiddenIds,
+    reporterFor,
+} from '../context';
+import { err, printJson, printPlan, visibleChanges } from '../output';
 
-export interface CliContext {
-    stack: string;
-    hosts: Host[];
-    cli: ParsedCli;
-}
-
-/**
- * Ids of tasks that are not shown at the current log level.
- */
-export function hiddenIds(plan: Plan, flags: ParsedCli['flags']): Set<string> {
-    return flags.logLevel <= 1 ? new Set() : noopIds(plan);
-}
+export { type CliContext, hiddenIds } from '../context';
 
 export async function run(ctx: CliContext): Promise<number> {
     if (ctx.hosts.length === 0) {
@@ -30,20 +16,21 @@ export async function run(ctx: CliContext): Promise<number> {
     }
 
     const flags = ctx.cli.flags;
-    const pool = await connect(ctx.hosts, (event) =>
-        connectionProgress(event, flags),
-    );
+    const reporter = reporterFor(flags);
+    const pool = await connectHosts(ctx.hosts, reporter);
     try {
+        reporter.status('Planning');
         const plan = await pool.plan(
             ctx.stack,
             flags.reapply ? 'reapply' : 'apply',
         );
+        reporter.status(null);
         if (flags.planFile) {
             await writePlan(flags.planFile, plan);
         }
         const hidden = hiddenIds(plan, flags);
         if (flags.json) {
-            printJson({ plans: visibleChanges(plan, hidden) });
+            printJson({ type: 'result', plans: visibleChanges(plan, hidden) });
         } else {
             printPlan(
                 plan,
