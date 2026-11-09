@@ -155,7 +155,7 @@ describe('remote', () => {
     test('says hello first', async () => {
         const remote = startRemote();
         await remote.end();
-        expect(remote.replies[0]).toEqual({ type: 'hello', protocol: 1 });
+        expect(remote.replies[0]).toEqual({ type: 'hello', protocol: 2 });
     });
 
     test('plans against missing state', async () => {

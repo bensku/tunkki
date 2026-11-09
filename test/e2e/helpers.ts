@@ -10,9 +10,11 @@ import {
     type Result,
 } from '../..';
 import * as builder from '../../local/builder';
+import { PROBE_HOST_PATH } from '../../task/podman/containerv2';
 
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const AGENT_BINARY = join(REPO_ROOT, 'tunkki');
+const PROBE_BINARY = join(REPO_ROOT, 'task/podman/healthprobe/healthprobe');
 
 /**
  * Nebula binaries live as a SIBLING of the tunkki repo (one level above
@@ -163,29 +165,36 @@ async function checkAndPrep(): Promise<boolean> {
     await build.exited;
     if (build.exitCode !== 0) throw new Error('failed to build agent binary');
 
-    // 4. Upload it where it differs. Uploads are large, and large transfers
-    // can crash QEMU (see relaxNicOffloads)
-    const hash = Bun.CryptoHasher.hash(
-        'sha256',
-        await Bun.file(AGENT_BINARY).bytes(),
-        'hex',
-    );
+    // 4. Upload it, and the health probe of podman.containerv2, where they
+    // differ. Uploads are large, and large transfers can crash QEMU (see
+    // relaxNicOffloads)
     await Promise.all(
         TEST_VMS.map(async (vm) => {
-            const remote = await vmExec(
-                vm,
-                'sha256sum /opt/tunkki/tunkki 2>/dev/null || true',
-            );
-            if (remote.stdout.startsWith(hash)) return;
-            await relaxNicOffloads(vm);
-            const ok = await vmConn(vm).upload(
-                AGENT_BINARY,
-                '/opt/tunkki/tunkki',
-            );
-            if (!ok) throw new Error(`agent upload to ${vm} failed`);
+            await uploadIfChanged(vm, AGENT_BINARY, '/opt/tunkki/tunkki');
+            await uploadIfChanged(vm, PROBE_BINARY, PROBE_HOST_PATH);
         }),
     );
     return true;
+}
+
+async function uploadIfChanged(
+    vm: TestVm,
+    localPath: string,
+    remotePath: string,
+) {
+    const hash = Bun.CryptoHasher.hash(
+        'sha256',
+        await Bun.file(localPath).bytes(),
+        'hex',
+    );
+    const remote = await vmExec(
+        vm,
+        `sha256sum ${remotePath} 2>/dev/null || true`,
+    );
+    if (remote.stdout.startsWith(hash)) return;
+    await relaxNicOffloads(vm);
+    const ok = await vmConn(vm).upload(localPath, remotePath);
+    if (!ok) throw new Error(`upload of ${localPath} to ${vm} failed`);
 }
 
 /**

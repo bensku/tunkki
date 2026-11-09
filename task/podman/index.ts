@@ -1,7 +1,14 @@
+import * as fs from 'node:fs';
 import { nebula } from '@bensku/tunkki';
 import { type TaskOutput, type TaskType, taskType } from '@bensku/tunkki/task';
 import type { nebula as nebulaUtil } from '@bensku/tunkki/task/util';
 import type { State as ContainerState } from './container';
+import {
+    type Input as ContainerV2In,
+    type VolumeSource as ContainerV2VolumeSourceIn,
+    type VolumeUploadFile,
+    validate as validateContainerV2,
+} from './containerv2';
 import type { State as NetworkState } from './network';
 import type { State as PodState } from './pod';
 import type { RandomString, ReadFromEnv, Input as SecretState } from './secret';
@@ -50,6 +57,76 @@ export const container = taskType<ContainerState, ContainerOutput>(
                     };
                 }
             }
+
+            // Add endpoint so that nebula-netavark knows what to do with us
+            const ep = nebula.endpoint(`${id}-nebula`, {
+                id: state.name,
+                ...endpoint,
+            });
+
+            // Make sure we're deployed BEFORE the container! Otherwise it won't start
+            opts.dependencies.push(ep.id);
+        },
+    }),
+);
+
+export type ContainerV2VolumeSource =
+    | Exclude<ContainerV2VolumeSourceIn, VolumeUploadFile>
+    | Omit<VolumeUploadFile, 'hash'>;
+
+export type ContainerV2Input = Omit<ContainerV2In, 'volumes'> & {
+    volumes?: Record<string, ContainerV2VolumeSource>;
+};
+
+/**
+ * Runs a container as a systemd service, using Podman Quadlet. The container
+ * is restarted whenever its input changes, and whenever it crashes.
+ */
+export const containerv2: TaskType<
+    ContainerV2Input,
+    TaskOutput & ContainerOutput & { outputs: unknown }
+> = (id, input, opts) => {
+    const { volumes, ...rest } = input;
+    const state: ContainerV2In = rest;
+    if (volumes) {
+        // Hash uploaded files, so that changing them changes the input
+        state.volumes = Object.fromEntries(
+            Object.entries(volumes).map(([target, source]) => [
+                target,
+                source.type === 'uploadFile'
+                    ? {
+                          ...source,
+                          hash: Bun.CryptoHasher.hash(
+                              'sha256',
+                              fs.readFileSync(source.localPath),
+                          ).toBase64(),
+                      }
+                    : source,
+            ]),
+        );
+    }
+    try {
+        validateContainerV2(state);
+    } catch (e) {
+        throw new Error(`invalid container ${id}: ${(e as Error).message}`);
+    }
+    return containerV2Internal(id, state, opts);
+};
+
+const containerV2Internal = taskType<ContainerV2In, ContainerOutput>(
+    'podman.containerv2',
+    import.meta.resolve('./containerv2'),
+    (id, state, opts) => ({
+        connectNebula: (endpoint) => {
+            // Make Podman call nebula-netavark plugin. Handler also orders
+            // the container after nebula-netavarkd.
+            const networks = state.networks ?? [];
+            if (networks.includes('nebula')) {
+                throw new Error(
+                    'currently, only one Nebula network per container is supported',
+                );
+            }
+            state.networks = [...networks, 'nebula'];
 
             // Add endpoint so that nebula-netavark knows what to do with us
             const ep = nebula.endpoint(`${id}-nebula`, {

@@ -131,3 +131,17 @@ export function combine<S, O>(
         } as O & { id: string };
     };
 }
+
+/**
+ * Checks if the given value is known plan-time. This may be useful when
+ * writing validation logic for your task's inputs.
+ * @param value Value to check.
+ * @returns True if value is known plan-time, false if it is an output from
+ * another task.
+ */
+export function isKnown(value: unknown): boolean {
+    if (typeof value === 'string') {
+        return !value.includes('$tunkki{');
+    }
+    return typeof value === 'number' || typeof value === 'boolean';
+}

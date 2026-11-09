@@ -1,19 +1,20 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PROBE_HOST_PATH } from '../../../task/podman/containerv2';
 import { makeColor } from '../colors';
 import { err, out, printJson } from '../output';
 import type { CliContext } from './plan';
 
 /**
- * Locate the bundled agent binary. Resolved against the package's own
- * `package.json` so it works when this code is consumed as a library
- * (`node_modules/@bensku/tunkki/tunkki`) and survives bundling — neither of
- * which a `${import.meta.dir}/../../../tunkki` style path tolerates.
+ * Locate the package root, where the bundled binaries are. Resolved against
+ * the package's own `package.json` so it works when this code is consumed as
+ * a library (`node_modules/@bensku/tunkki/tunkki`) and survives bundling —
+ * neither of which a `${import.meta.dir}/../../../tunkki` style path
+ * tolerates.
  */
-function resolveAgentPath(): string {
+function packageRoot(): string {
     const pkgUrl = import.meta.resolve('@bensku/tunkki/package.json');
-    const pkgRoot = dirname(fileURLToPath(pkgUrl));
-    return join(pkgRoot, 'tunkki');
+    return dirname(fileURLToPath(pkgUrl));
 }
 
 export async function run(ctx: CliContext): Promise<number> {
@@ -22,8 +23,20 @@ export async function run(ctx: CliContext): Promise<number> {
         return 2;
     }
 
-    const localPath = resolveAgentPath();
-    const remotePath = '/opt/tunkki/tunkki';
+    // Both binaries are x86-64 only for now
+    const uploads = [
+        {
+            localPath: join(packageRoot(), 'tunkki'),
+            remotePath: '/opt/tunkki/tunkki',
+        },
+        {
+            localPath: join(
+                packageRoot(),
+                'task/podman/healthprobe/healthprobe',
+            ),
+            remotePath: PROBE_HOST_PATH,
+        },
+    ];
 
     const flags = ctx.cli.flags;
     const c = makeColor(flags.color);
@@ -31,12 +44,18 @@ export async function run(ctx: CliContext): Promise<number> {
 
     for (const host of ctx.hosts) {
         try {
-            const ok = await host.conn.upload(localPath, remotePath);
+            let ok = true;
+            for (const { localPath, remotePath } of uploads) {
+                ok = await host.conn.upload(localPath, remotePath);
+                if (!ok) {
+                    break;
+                }
+            }
             if (ok) {
                 results.push({ host: host.id, ok: true });
                 if (!flags.json) {
                     out(
-                        `${c.dim(`[${host.id}]`)} ${c.green('✓')} installed agent at ${remotePath}`,
+                        `${c.dim(`[${host.id}]`)} ${c.green('✓')} installed agent and health probe in /opt/tunkki`,
                     );
                 }
             } else {

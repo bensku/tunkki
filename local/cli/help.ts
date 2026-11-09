@@ -66,7 +66,8 @@ Flags:
     'install-agent': `Usage: <script> install-agent [flags]
 
 Upload the agent binary to /opt/tunkki/tunkki on each host using the
-connector's upload transport.
+connector's upload transport. Also uploads the HTTP health probe that
+podman.containerv2 uses to /opt/tunkki/healthprobe.
 
 Flags:
       --target <key=val>   Filter hosts by tag (repeatable)

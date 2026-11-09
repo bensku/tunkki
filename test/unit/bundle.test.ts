@@ -29,6 +29,7 @@ describe('handler bundles', () => {
             'nebula.endpoint',
             'nebula.network',
             'podman.container',
+            'podman.containerv2',
             'podman.network',
             'podman.pod',
             'podman.secret',

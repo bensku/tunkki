@@ -295,3 +295,35 @@ function quoteArg(arg: string): string {
     if (/^[A-Za-z0-9_\-./@:=+,%]+$/.test(arg)) return arg;
     return `"${arg.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
 }
+
+/**
+ * Escapes systemd specifiers (`%`) and environment variable expansion (`$`),
+ * so that systemd uses the value literally. Quadlet copies most values into
+ * ExecStart, where systemd would otherwise expand them.
+ */
+export function escapeValue(value: string | number): string {
+    return String(value).replace(/[%$]/g, (c) => c + c);
+}
+
+/**
+ * Quotes a single word for systemd's command line syntax, if needed. Does not
+ * escape specifiers or variables; see {@link escapeValue}.
+ */
+export function quoteWord(word: string): string {
+    if (/^[A-Za-z0-9_\-./@:=+,]+$/.test(word)) {
+        return word;
+    }
+    const escaped = word.replace(/[\\"\n\t]/g, (c) =>
+        c === '\n' ? '\\n' : c === '\t' ? '\\t' : `\\${c}`,
+    );
+    return `"${escaped}"`;
+}
+
+/**
+ * Renders a list of words in systemd's command line syntax, which Quadlet
+ * uses for e.g. Exec= and PodmanArgs=. Unlike {@link renderCommand}, every
+ * word is used literally: specifiers and variables are escaped.
+ */
+export function renderWords(args: string[]): string {
+    return args.map((arg) => quoteWord(escapeValue(arg))).join(' ');
+}

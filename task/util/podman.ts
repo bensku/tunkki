@@ -1,4 +1,13 @@
-import type { UnitValue } from './systemd';
+import { escapeValue, type UnitValue } from './systemd';
+
+/**
+ * Renders argv as JSON, which Podman takes as exec form for e.g. health checks
+ * and entrypoints. This way, no shell is needed in the container. The result
+ * is escaped for use in a Quadlet unit.
+ */
+export function execForm(args: string[]): string {
+    return escapeValue(JSON.stringify(args));
+}
 
 /**
  * Defaults merged into the `[Unit]` section of every generated `.pod` and

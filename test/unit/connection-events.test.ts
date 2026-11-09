@@ -1,14 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import type { FileSink } from 'bun';
 import { type ConnectionEvent, connect, type Host } from '../..';
-import { type Event, writeEvent } from '../../common/event';
+import { CURRENT_PROTOCOL, type Event, writeEvent } from '../../common/event';
 import type { Connector } from '../../protocol';
 
 /**
  * Connector to an agent that only says hello.
  */
 function successfulConnector(
-    hello: Event = { type: 'hello', protocol: 1 },
+    hello: Event = { type: 'hello', protocol: CURRENT_PROTOCOL },
 ): Connector {
     return {
         upload: async () => false,
@@ -77,7 +77,7 @@ describe('connection events', () => {
             'incompatible agent on old, run install-agent',
         );
         expect(failure.errors[0].cause.message).toContain(
-            'agent uses protocol v0, but v1 is required',
+            'agent uses protocol v0, but v2 is required',
         );
     });
 });
