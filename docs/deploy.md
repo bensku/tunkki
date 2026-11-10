@@ -29,7 +29,9 @@ their `deps`. Each rolling `on(...)` block also records which tasks it added
 on each host, in host order.
 
 Tasks can use outputs of other tasks (what their last step returned) through
-`task.outputs`. These are proxies that turn into tokens like
+fields of the task objects that task types return, e.g. `endpoint.ip`. Fields
+the task type itself defines, such as `id`, take precedence over outputs with
+same names. Output fields are proxies that turn into tokens like
 `$tunkki{h1.endpoint/ip}` once all tasks are loaded. The task whose output is
 used is added to `deps` automatically.
 

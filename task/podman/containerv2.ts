@@ -18,7 +18,7 @@ interface VolumeSourceBase {
      * Relabel the mounted content so that SELinux lets the container access
      * it. Defaults to false, because this is unsafe for system directories
      * such as /etc, /var/run, /home/$USER, etc.
-     * 
+     *
      * Unsupported for secrets.
      */
     selinuxRelabel?: boolean;

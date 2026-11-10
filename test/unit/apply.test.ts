@@ -154,10 +154,10 @@ describe('apply', () => {
             let a: ReturnType<typeof basic> | undefined;
             on('h1', () => {
                 a = basic('a', { name: 'a', value: 80 });
-                basic('b', { name: 'b', value: a.outputs.value });
+                basic('b', { name: 'b', value: a.value });
             });
             on('h2', () => {
-                basic('c', { name: 'c', value: `port ${a?.outputs.value}` });
+                basic('c', { name: 'c', value: `port ${a?.value}` });
             });
         });
         expect((await readState(dir, 'h1', 'prod'))['h1.b']).toMatchObject({
@@ -174,7 +174,7 @@ describe('apply', () => {
         const { results } = await deploy(() =>
             on('h1', () => {
                 const a = basic('a', { name: 'a' });
-                const outputs = a.outputs as unknown as Record<string, unknown>;
+                const outputs = a as unknown as Record<string, unknown>;
                 basic('b', { name: 'b', value: outputs.missing });
             }),
         );

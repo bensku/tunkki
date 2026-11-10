@@ -1,6 +1,6 @@
 /**
  * References to task outputs. While tasks are defined, a reference is a proxy
- * returned by `task.outputs`. When loading finishes, the builder turns proxies
+ * returned by a task type (for fields that the type doesn't define itself). When loading finishes, the builder turns proxies
  * into tokens such as `$tunkki{h1.endpoint/ip}`, which are substituted with
  * actual outputs at plan and apply time.
  */
@@ -33,6 +33,23 @@ export function outputRef(id: string, path: string[] = []): unknown {
             },
         },
     );
+}
+
+/**
+ * Creates the object a task type returns: given fields (e.g. the task's id)
+ * merged with a reference to the task's output. Given fields take precedence
+ * over fields of the output with same names.
+ */
+export function withOutputRef<T extends object>(id: string, fields: T): T {
+    const ref = outputRef(id) as Record<string | symbol, unknown>;
+    return new Proxy(fields, {
+        get(target, prop, receiver) {
+            if (prop in target) {
+                return Reflect.get(target, prop, receiver);
+            }
+            return ref[prop];
+        },
+    });
 }
 
 function tokenOf(ref: OutputRef): string {

@@ -149,7 +149,7 @@ const fromEnv = (value: string) => () => {
     process.env[ENV] = value;
     on('h1', () => {
         const s = podman.secretv2('s', { driver: 'localEnv', source: ENV });
-        basic('user', { name: 'user', value: s.outputs.ref.podmanId });
+        basic('user', { name: 'user', value: s.ref.podmanId });
     });
 };
 

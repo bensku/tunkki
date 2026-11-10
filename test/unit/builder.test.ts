@@ -240,7 +240,7 @@ describe('outputs', () => {
     test('a whole-value reference becomes a token and a dep', async () => {
         on('*', () => {
             const a = withOutputs('a', {});
-            dummy('b', { value: a.outputs.port });
+            dummy('b', { value: a.port });
         });
         await builder.loadTasks([fakeHost('h1')]);
         expect(builder.tasks[1]).toMatchObject({
@@ -254,7 +254,7 @@ describe('outputs', () => {
             const a = withOutputs('a', {});
             dummy('b', {
                 value: 1,
-                list: [`http://${a.outputs.address.host}:${a.outputs.port}/`],
+                list: [`http://${a.address.host}:${a.port}/`],
             });
         });
         await builder.loadTasks([fakeHost('h1')]);
@@ -269,9 +269,7 @@ describe('outputs', () => {
         on('*', () => {
             const a = withOutputs('we/ird}', {});
             dummy('b', {
-                value:
-                    (a.outputs as unknown as Record<string, number>)['a/b'] ??
-                    0,
+                value: (a as unknown as Record<string, number>)['a/b'] ?? 0,
             });
         });
         await builder.loadTasks([fakeHost('h1')]);
@@ -287,7 +285,7 @@ describe('outputs', () => {
             const state: { value: number; extra?: number } = { value: 1 };
             dummy('b', state);
             const a = withOutputs('a', {});
-            state.extra = a.outputs.port;
+            state.extra = a.port;
         });
         await builder.loadTasks([fakeHost('h1')]);
         expect(builder.tasks[0]).toMatchObject({
@@ -297,11 +295,31 @@ describe('outputs', () => {
         });
     });
 
+    test('own fields of task type take precedence over outputs', async () => {
+        const merged = taskType<
+            { value?: number },
+            { extra: string },
+            { id: string; extra: number; port: number }
+        >('test.merged', 'test/unit/builder.test.ts', () => ({
+            extra: 'own',
+        }));
+        on('*', () => {
+            const a = merged('a', {});
+            expect(a.id).toBe('h1.a');
+            expect(a.extra).toBe('own');
+            dummy('b', { value: a.port });
+        });
+        await builder.loadTasks([fakeHost('h1')]);
+        expect(builder.tasks[1]?.state).toEqual({
+            value: '$tunkki{h1.a/port}',
+        });
+    });
+
     test('referencing own outputs is rejected', async () => {
         on('*', () => {
             const state: { value?: number } = {};
             const a = withOutputs('a', state);
-            state.value = a.outputs.port;
+            state.value = a.port;
         });
         expect(builder.loadTasks([fakeHost('h1')])).rejects.toThrow(
             /h1.a depends on itself/,

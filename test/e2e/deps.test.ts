@@ -95,13 +95,13 @@ t(
             let a: ReturnType<typeof probe> | undefined;
             on('test1', () => {
                 a = probe('a', { name: 'a', dir, value: 80 });
-                probe('same', { name: 'same', dir, value: a.outputs.value });
+                probe('same', { name: 'same', dir, value: a.value });
             });
             on('test2', () => {
                 probe('other', {
                     name: 'other',
                     dir,
-                    value: `${a?.outputs.host}:${a?.outputs.value}`,
+                    value: `${a?.host}:${a?.value}`,
                 });
             });
         });
@@ -117,7 +117,7 @@ t('unresolved outputs fail the task', async () => {
     const outcome = await applyOnce(stack, hosts, () =>
         on('test1', () => {
             const a = probe('a', { name: 'a', dir });
-            const outputs = a.outputs as unknown as Record<string, unknown>;
+            const outputs = a as unknown as Record<string, unknown>;
             probe('b', { name: 'b', dir, value: outputs.missing });
         }),
     );

@@ -105,7 +105,7 @@ t('runs a container, waits until healthy, updates and removes', async () => {
                 cmd: ['httpd', '-f', '-p', '8080', '-h', '/www'],
                 user: 1000,
                 env: { GREETING: 'hi there, $USER 100%' },
-                secrets: { PASS: secret.outputs.ref },
+                secrets: { PASS: secret.ref },
                 volumes: {
                     '/www/index.html': {
                         type: 'writeFile',
@@ -119,7 +119,7 @@ t('runs a container, waits until healthy, updates and removes', async () => {
                         template: { NAME: 'tunkki' },
                         selinuxRelabel: true,
                     },
-                    '/run/pass': { type: 'secret', ref: secret.outputs.ref },
+                    '/run/pass': { type: 'secret', ref: secret.ref },
                     '/data': {
                         type: 'hostPath',
                         path: `/var/tmp/tunkki-e2e/${name}`,

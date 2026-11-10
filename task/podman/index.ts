@@ -84,7 +84,7 @@ export type ContainerV2Input = Omit<ContainerV2In, 'volumes'> & {
  */
 export const containerv2: TaskType<
     ContainerV2Input,
-    TaskOutput & ContainerOutput & { outputs: unknown }
+    TaskOutput & ContainerOutput
 > = (id, input, opts) => {
     const { volumes, ...rest } = input;
     const state: ContainerV2In = rest;
@@ -193,12 +193,13 @@ export type SecretV2Output = SecretV2Out;
 
 /**
  * Creates a Podman secret on host from given source. Its name changes
- * whenever its value changes; use `outputs.ref` to refer to it.
+ * whenever its value changes; use `ref` to refer to it.
  */
-export const secretv2: TaskType<
-    SecretV2Input,
-    TaskOutput & { outputs: SecretV2Output }
-> = (id, input, opts) => {
+export const secretv2: TaskType<SecretV2Input, TaskOutput & SecretV2Output> = (
+    id,
+    input,
+    opts,
+) => {
     const driver = SECRET_DRIVERS[input.driver];
     if (!driver) {
         throw new Error(

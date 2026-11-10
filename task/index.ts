@@ -1,6 +1,6 @@
 import type { Host } from '@bensku/tunkki';
 import * as builder from '../local/builder';
-import { outputRef } from '../local/outputs';
+import { withOutputRef } from '../local/outputs';
 import { registerHandler } from '../local/task';
 
 export { log } from '../common/log';
@@ -79,9 +79,16 @@ export type TaskType<S, O extends TaskOutput> = (
  * @param name Unique name of the task type.
  * @param handler Path of the module that implements it.
  * @param outputSource Adds extra fields to what the task type returns.
- * @returns The task type. Tasks it creates have `outputs`, which can be used
- * in inputs of other tasks to refer to the value the last step returns (R).
+ * @returns The task type. What it returns also has fields of the value the
+ * last step of the task returns (R). These can be used in inputs of other
+ * tasks to refer to the value. The id and fields from outputSource take
+ * precedence over fields of R with same names.
  */
+/**
+ * What a task type returns: its own fields merged with fields of its output.
+ */
+export type WithOutputs<O, R> = TaskOutput & O & Omit<R, keyof O | 'id'>;
+
 export function taskType<S, O, R = unknown>(
     name: string,
     handler: string,
@@ -90,16 +97,15 @@ export function taskType<S, O, R = unknown>(
         state: S,
         opts: { dependencies: string[] },
     ) => O,
-): TaskType<S, O & { id: string; outputs: R }> {
+): TaskType<S, WithOutputs<O, R>> {
     registerHandler(name, handler.replace('file://', ''));
     return (id, state, opts) => {
         const qualifiedId = builder.qualifyId(id);
         const task = builder.addTask(qualifiedId, name, state, opts ?? {});
-        return {
+        return withOutputRef(qualifiedId, {
             id: qualifiedId,
-            outputs: outputRef(qualifiedId) as R,
             ...outputSource?.(qualifiedId, state, { dependencies: task.deps }),
-        } as O & { id: string; outputs: R };
+        }) as WithOutputs<O, R>;
     };
 }
 
